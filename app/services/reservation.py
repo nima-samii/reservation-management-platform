@@ -104,13 +104,19 @@ class ReservationService:
             channel_id=channel.id,
         )
 
+        # Re-fetch with selectinload so slot/channel are eagerly loaded.
+        # Direct attribute assignment (reservation.slot = slot) is not reliable
+        # in async SQLAlchemy — the ORM event system can still trigger a greenlet
+        # context switch → MissingGreenlet at the handler level.
+        loaded = await self._res_repo.get_reservation_with_details(reservation.id)
+
         logger.info(
             "reservation_created",
             user_id=str(user_id),
             slot=str(slot.slot_datetime),
             channel=channel.name,
         )
-        return reservation
+        return loaded  # type: ignore[return-value]
 
     async def cancel_reservation(
         self, *, telegram_id: int, reservation_id: uuid.UUID
