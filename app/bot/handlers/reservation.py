@@ -4,11 +4,11 @@ from datetime import date
 import pytz
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.inline.dates import build_date_keyboard
-from app.bot.keyboards.inline.slots import build_slot_keyboard
+from app.bot.keyboards.inline.slots import build_slot_keyboard_grouped
 from app.bot.keyboards.main_menu import MainMenuButton, get_main_menu
 from app.bot.states.reservation import ReservationSG
 from app.cache.client import redis_client
@@ -16,13 +16,13 @@ from app.core.config import settings
 from app.core.exceptions import (
     DailyLimitError,
     MaxReservationsError,
-    NoChannelAvailableError,
     NotFoundError,
     PastSlotError,
     SlotUnavailableError,
 )
 from app.core.logging import get_logger
 from app.db.models.user import User
+from app.repositories.slot import SlotRepository
 from app.services.reservation import ReservationService
 from app.services.slot import SlotService
 
@@ -33,7 +33,9 @@ TZ = pytz.timezone(settings.TIMEZONE)
 
 
 @router.message(F.text == MainMenuButton.RESERVE)
-async def start_reservation(message: Message, state: FSMContext, session: AsyncSession, db_user: User | None) -> None:
+async def start_reservation(
+    message: Message, state: FSMContext, session: AsyncSession, db_user: User | None
+) -> None:
     if not db_user:
         await message.answer("Please register first with /start")
         return
@@ -60,7 +62,9 @@ async def start_reservation(message: Message, state: FSMContext, session: AsyncS
 
 
 @router.callback_query(ReservationSG.choose_date, F.data.startswith("date:"))
-async def choose_date(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+async def choose_date(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
     await callback.answer()
     date_str = callback.data.split(":", 1)[1]  # type: ignore[union-attr]
 
@@ -71,9 +75,9 @@ async def choose_date(callback: CallbackQuery, state: FSMContext, session: Async
         return
 
     slot_svc = SlotService(session)
-    slots = await slot_svc.get_available_slots_for_date(selected_date)
+    grouped = await slot_svc.get_available_slots_for_date_grouped(selected_date)
 
-    if not slots:
+    if not grouped["recommended"] and not grouped["more_available"]:
         await callback.answer(
             "No available slots for this date. Please pick another.", show_alert=True
         )
@@ -81,17 +85,29 @@ async def choose_date(callback: CallbackQuery, state: FSMContext, session: Async
 
     await state.update_data(selected_date=date_str)
 
+    more_count = len(grouped["more_available"])
+    subtitle = ""
+    if more_count:
+        subtitle = f"\n_+{more_count} more slots available from additional channels_"
+
     await callback.message.edit_text(  # type: ignore[union-attr]
-        f"🕐 *Available slots for {selected_date.strftime('%A, %d %B')}:*\n\n"
+        f"🕐 *Available slots for {selected_date.strftime('%A, %d %B')}:*{subtitle}\n\n"
         "Select a time slot:",
-        reply_markup=build_slot_keyboard(slots, selected_date),
+        reply_markup=build_slot_keyboard_grouped(grouped["recommended"], grouped["more_available"]),
         parse_mode="Markdown",
     )
     await state.set_state(ReservationSG.choose_slot)
 
 
+@router.callback_query(F.data.startswith("section:"))
+async def section_header_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
 @router.callback_query(ReservationSG.choose_slot, F.data == "reservation:back_to_dates")
-async def back_to_dates(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+async def back_to_dates(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
     await callback.answer()
     slot_svc = SlotService(session)
     available_dates = await slot_svc.get_available_dates()
@@ -125,8 +141,6 @@ async def choose_slot(
         await callback.answer("Invalid slot.", show_alert=True)
         return
 
-    from app.db.models.slot import ReservationSlot
-    from app.repositories.slot import SlotRepository
     slot_repo = SlotRepository(session)
     slot = await slot_repo.get_by_id(slot_id)
 
@@ -140,7 +154,6 @@ async def choose_slot(
 
     await state.update_data(slot_id=str(slot_id))
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     confirm_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -192,13 +205,32 @@ async def confirm_reservation(
             slot_id=slot_id,
         )
     except SlotUnavailableError:
-        await callback.message.edit_text(  # type: ignore[union-attr]
-            "❌ *Slot Unavailable*\n\n"
-            "This slot was just booked by someone else.\n"
-            "Please go back and choose another slot.",
-            parse_mode="Markdown",
-        )
-        await state.clear()
+        fsm_data = await state.get_data()
+        date_str = fsm_data.get("selected_date", "")
+        if date_str:
+            retry_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔄 Pick Another Slot",
+                    callback_data=f"date:{date_str}",
+                ),
+                InlineKeyboardButton(text="❌ Cancel", callback_data="reservation:cancel"),
+            ]])
+            await callback.message.edit_text(  # type: ignore[union-attr]
+                "⚡ *Slot No Longer Available*\n\n"
+                "Someone else just booked this time slot.\n"
+                "Please pick a different time.",
+                reply_markup=retry_kb,
+                parse_mode="Markdown",
+            )
+            await state.set_state(ReservationSG.choose_date)
+        else:
+            await callback.message.edit_text(  # type: ignore[union-attr]
+                "⚡ *Slot No Longer Available*\n\n"
+                "Someone else just booked this time slot.\n"
+                "Please start over and pick a different time.",
+                parse_mode="Markdown",
+            )
+            await state.clear()
         return
     except DailyLimitError:
         await callback.message.edit_text(  # type: ignore[union-attr]
@@ -223,21 +255,16 @@ async def confirm_reservation(
         )
         await state.clear()
         return
-    except NoChannelAvailableError:
-        await callback.message.edit_text(  # type: ignore[union-attr]
-            "😕 No channels are available right now. Please try again later.",
-            parse_mode="Markdown",
-        )
-        await state.clear()
-        return
 
     slot_dt = reservation.slot.slot_datetime.astimezone(TZ)
+    invite_line = f"\n🔗 [Join Channel]({reservation.channel.invite_link})" if reservation.channel.invite_link else ""
 
     await callback.message.edit_text(  # type: ignore[union-attr]
         f"🎉 *Reservation Confirmed!*\n\n"
         f"📅 {slot_dt.strftime('%A, %d %B %Y')}\n"
         f"🕐 {slot_dt.strftime('%I:%M %p')}\n"
-        f"📡 Channel: {reservation.channel.name}\n\n"
+        f"📡 Channel: {reservation.channel.name}"
+        f"{invite_line}\n\n"
         f"🔑 Reservation ID: `{str(reservation.id)[:8]}...`\n\n"
         "You can view or cancel this under *My Reservations*.",
         parse_mode="Markdown",
