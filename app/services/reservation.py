@@ -11,14 +11,12 @@ from app.core.config import settings
 from app.core.exceptions import (
     DailyLimitError,
     MaxReservationsError,
-    NoChannelAvailableError,
     NotFoundError,
     PastSlotError,
     SlotUnavailableError,
 )
 from app.core.logging import get_logger
 from app.db.models.reservation import Reservation, ReservationStatus
-from app.repositories.channel import ChannelRepository
 from app.repositories.reservation import ReservationRepository
 from app.repositories.slot import SlotRepository
 from app.repositories.user import UserRepository
@@ -35,7 +33,6 @@ class ReservationService:
         self._redis = redis
         self._res_repo = ReservationRepository(session)
         self._slot_repo = SlotRepository(session)
-        self._channel_repo = ChannelRepository(session)
         self._user_repo = UserRepository(session)
 
     def _now_tz(self) -> datetime:
@@ -89,28 +86,27 @@ class ReservationService:
         if active_count >= settings.MAX_ACTIVE_RESERVATIONS:
             raise MaxReservationsError(settings.MAX_ACTIVE_RESERVATIONS)
 
-        channel = await self._channel_repo.get_assignable_channel(
-            settings.CHANNEL_CAPACITY_THRESHOLD
-        )
-        if not channel:
-            raise NoChannelAvailableError()
-
         slot.is_booked = True
         await self._slot_repo.save(slot)
 
         reservation = await self._res_repo.create(
             user_id=user_id,
             slot_id=slot.id,
-            channel_id=channel.id,
+            channel_id=slot.channel_id,  # channel is encoded in the slot itself
         )
+
+        # Re-fetch with selectinload so slot/channel are eagerly loaded.
+        # Direct attribute assignment is not reliable in async SQLAlchemy —
+        # the ORM event system can still trigger a greenlet context switch.
+        loaded = await self._res_repo.get_reservation_with_details(reservation.id)
 
         logger.info(
             "reservation_created",
             user_id=str(user_id),
             slot=str(slot.slot_datetime),
-            channel=channel.name,
+            channel_id=str(slot.channel_id),
         )
-        return reservation
+        return loaded  # type: ignore[return-value]
 
     async def cancel_reservation(
         self, *, telegram_id: int, reservation_id: uuid.UUID

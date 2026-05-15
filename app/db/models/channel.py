@@ -17,6 +17,9 @@ class Channel(Base, UUIDMixin, TimestampMixin):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    slots: Mapped[list["ReservationSlot"]] = relationship(  # noqa: F821
+        "ReservationSlot", back_populates="channel"
+    )
     reservations: Mapped[list["Reservation"]] = relationship(  # noqa: F821
         "Reservation", back_populates="channel"
     )
