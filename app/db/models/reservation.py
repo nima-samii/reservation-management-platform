@@ -1,0 +1,56 @@
+import uuid
+from enum import Enum
+
+from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base, TimestampMixin, UUIDMixin
+
+
+class ReservationStatus(str, Enum):
+    ACTIVE = "active"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    NO_SHOW = "no_show"
+
+
+class Reservation(Base, UUIDMixin, TimestampMixin):
+    __tablename__ = "reservations"
+    __table_args__ = (
+        UniqueConstraint("slot_id", name="uq_reservations_slot"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    slot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reservation_slots.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("channels.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default=ReservationStatus.ACTIVE,
+        nullable=False,
+        index=True,
+    )
+    notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="reservations")  # noqa: F821
+    slot: Mapped["ReservationSlot"] = relationship(  # noqa: F821
+        "ReservationSlot", back_populates="reservation"
+    )
+    channel: Mapped["Channel"] = relationship("Channel", back_populates="reservations")  # noqa: F821
+
+    def __repr__(self) -> str:
+        return f"<Reservation {self.id} status={self.status}>"

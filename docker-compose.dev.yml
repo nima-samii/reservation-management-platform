@@ -1,0 +1,13 @@
+version: "3.9"
+
+# Development override: runs polling instead of webhook, enables DEBUG mode
+services:
+  app:
+    command: python main_polling.py
+    environment:
+      DEBUG: "true"
+      LOG_FORMAT: "console"
+      LOG_LEVEL: "DEBUG"
+      WEBHOOK_URL: ""
+    volumes:
+      - .:/app
