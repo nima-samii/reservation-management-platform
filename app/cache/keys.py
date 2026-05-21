@@ -35,3 +35,8 @@ class CacheKey:
     @staticmethod
     def slot_generation_lock() -> str:
         return "lock:slot_generation"
+
+    # Reservation lifecycle lock (prevents double-run)
+    @staticmethod
+    def reservation_lifecycle_lock() -> str:
+        return "lock:reservation_lifecycle"

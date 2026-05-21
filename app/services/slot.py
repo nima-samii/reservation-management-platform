@@ -4,6 +4,7 @@ from typing import TypedDict
 import pytz
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.booking_rules import is_same_day_cutoff_passed
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.models.slot import ReservationSlot
@@ -80,10 +81,15 @@ class SlotService:
         - recommended: Channel 1 (always open) available slots
         - more_available: Channel 2+ slots, unlocked when the preceding channel
           reaches CHANNEL_CAPACITY_THRESHOLD fill ratio for that day
+
+        Returns empty groups when the same-day cutoff has passed for today.
         """
         threshold = settings.CHANNEL_CAPACITY_THRESHOLD
         slots_per_day = self._slots_per_day()
         now = self._now_tz()
+
+        if is_same_day_cutoff_passed(slot_date, now, settings.SAME_DAY_CUTOFF_HOUR):
+            return GroupedSlots(recommended=[], more_available=[])
         channels = await self._channel_repo.get_active_channels_ordered()
 
         recommended: list[ReservationSlot] = []

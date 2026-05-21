@@ -10,9 +10,9 @@ from app.db.base import Base, TimestampMixin, UUIDMixin
 
 class ReservationStatus(str, Enum):
     ACTIVE = "active"
-    CANCELLED = "cancelled"
     COMPLETED = "completed"
-    NO_SHOW = "no_show"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 class Reservation(Base, UUIDMixin, TimestampMixin):

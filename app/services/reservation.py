@@ -8,11 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.cache.client import RedisClient
 from app.cache.keys import CacheKey
 from app.core.config import settings
+from app.core.booking_rules import is_same_day_cutoff_passed
 from app.core.exceptions import (
+    CancellationCutoffError,
     DailyLimitError,
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
+    SameDayCutoffError,
     SlotUnavailableError,
 )
 from app.core.logging import get_logger
@@ -73,6 +76,10 @@ class ReservationService:
         if slot.slot_datetime <= now:
             raise PastSlotError()
 
+        slot_local_date = slot.slot_datetime.astimezone(TZ).date()
+        if is_same_day_cutoff_passed(slot_local_date, now, settings.SAME_DAY_CUTOFF_HOUR):
+            raise SameDayCutoffError(settings.SAME_DAY_CUTOFF_HOUR)
+
         if slot.is_booked:
             raise SlotUnavailableError()
 
@@ -82,7 +89,7 @@ class ReservationService:
         if day_conflict:
             raise DailyLimitError()
 
-        active_count = await self._res_repo.count_active_reservations(user_id)
+        active_count = await self._res_repo.count_active_reservations(user_id, now)
         if active_count >= settings.MAX_ACTIVE_RESERVATIONS:
             raise MaxReservationsError(settings.MAX_ACTIVE_RESERVATIONS)
 
@@ -131,6 +138,10 @@ class ReservationService:
         if reservation.slot.slot_datetime <= now:
             raise PastSlotError()
 
+        slot_local_date = reservation.slot.slot_datetime.astimezone(TZ).date()
+        if is_same_day_cutoff_passed(slot_local_date, now, settings.SAME_DAY_CANCEL_CUTOFF_HOUR):
+            raise CancellationCutoffError(settings.SAME_DAY_CANCEL_CUTOFF_HOUR)
+
         reservation.status = ReservationStatus.CANCELLED
         reservation.slot.is_booked = False
 
@@ -147,4 +158,16 @@ class ReservationService:
         user = await self._user_repo.get_by_telegram_id(telegram_id)
         if not user:
             raise NotFoundError("User")
-        return await self._res_repo.get_user_active_reservations(user.id)
+        now = self._now_tz()
+        return await self._res_repo.get_user_active_reservations(user.id, now)
+
+    async def complete_past_reservations(self) -> int:
+        """Transition active reservations whose slot has passed to COMPLETED.
+
+        Called by the scheduler job; returns the count of updated rows.
+        """
+        now = self._now_tz()
+        count = await self._res_repo.mark_past_reservations_completed(now)
+        if count:
+            logger.info("reservations_completed", count=count)
+        return count

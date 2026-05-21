@@ -18,6 +18,7 @@ from app.core.exceptions import (
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
+    SameDayCutoffError,
     SlotUnavailableError,
 )
 from app.core.logging import get_logger
@@ -251,6 +252,15 @@ async def confirm_reservation(
     except PastSlotError:
         await callback.message.edit_text(  # type: ignore[union-attr]
             "⚠️ This slot has already passed.",
+            parse_mode="Markdown",
+        )
+        await state.clear()
+        return
+    except SameDayCutoffError as e:
+        await callback.message.edit_text(  # type: ignore[union-attr]
+            f"⏰ *Reservations Closed for Today*\n\n"
+            f"{e.message}\n\n"
+            "Please choose a slot for tomorrow or a later date.",
             parse_mode="Markdown",
         )
         await state.clear()

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     MAX_ACTIVE_RESERVATIONS: int = 10
     MAX_RESERVATION_DAYS_AHEAD: int = 14
     CHANNEL_CAPACITY_THRESHOLD: float = 0.70
+    # Hour (0-23, local timezone) after which same-day reservations are blocked
+    SAME_DAY_CUTOFF_HOUR: int = 12
+    # Hour (0-23, local timezone) after which same-day cancellations are blocked
+    SAME_DAY_CANCEL_CUTOFF_HOUR: int = 12
 
     # ── Slot schedule ─────────────────────────────────────────────────────
     SLOT_START_HOUR: int = 16   # 4:00 PM
