@@ -23,6 +23,7 @@ from app.db.models.reservation import Reservation, ReservationStatus
 from app.repositories.reservation import ReservationRepository
 from app.repositories.slot import SlotRepository
 from app.repositories.user import UserRepository
+from app.services.score import ParticipationScoreService
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,7 @@ class ReservationService:
         self._res_repo = ReservationRepository(session)
         self._slot_repo = SlotRepository(session)
         self._user_repo = UserRepository(session)
+        self._score_svc = ParticipationScoreService(session)
 
     def _now_tz(self) -> datetime:
         return datetime.now(TZ)
@@ -103,11 +105,12 @@ class ReservationService:
         )
 
         # Re-fetch with selectinload so slot/channel are eagerly loaded.
-        # Re-fetch with selectinload so slot/channel are eagerly loaded.
         # Direct attribute assignment (reservation.slot = slot) is not reliable
         # in async SQLAlchemy — the ORM event system can still trigger a greenlet
         # context switch → MissingGreenlet at the handler level.
         loaded = await self._res_repo.get_reservation_with_details(reservation.id)
+
+        await self._score_svc.award_reservation_reward(user_id, reservation.id)
 
         logger.info(
             "reservation_created",
@@ -147,6 +150,8 @@ class ReservationService:
 
         await self._res_repo.save(reservation)
         await self._slot_repo.save(reservation.slot)
+
+        await self._score_svc.rollback_cancellation(user.id, reservation_id)
 
         logger.info(
             "reservation_cancelled",

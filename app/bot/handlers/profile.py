@@ -72,7 +72,8 @@ async def show_profile(message: Message, db_user: User | None, session: AsyncSes
         f"🔑 ID: `{db_user.public_user_code}`\n"
         f"📛 Name: {db_user.full_name}\n"
         f"⚧ Gender: {gender_display}\n"
-        f"🌍 Country: {country_name}\n\n"
+        f"🌍 Country: {country_name}\n"
+        f"⭐ Participation Score: *{db_user.participation_score}*\n\n"
         "What would you like to edit?",
         reply_markup=_profile_edit_keyboard(),
         parse_mode="Markdown",
@@ -105,7 +106,8 @@ async def profile_back(callback: CallbackQuery, state: FSMContext, db_user: User
         f"🔑 ID: `{db_user.public_user_code if db_user else 'N/A'}`\n"  # type: ignore[union-attr]
         f"📛 Name: {db_user.full_name if db_user else 'N/A'}\n"  # type: ignore[union-attr]
         f"⚧ Gender: {gender_display}\n"
-        f"🌍 Country: {country_name}\n\n"
+        f"🌍 Country: {country_name}\n"
+        f"⭐ Participation Score: *{db_user.participation_score if db_user else 0}*\n\n"
         "What would you like to edit?",
         reply_markup=_profile_edit_keyboard(),
         parse_mode="Markdown",
