@@ -41,7 +41,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 | **Repositories** | Data access — all DB queries live here |
 | **Models** | SQLAlchemy ORM entities |
 | **Cache** | Redis client, rate limiting, distributed locks |
-| **Schedulers** | Background job for slot generation |
+| **Schedulers** | Slot generation + reservation lifecycle transitions |
 
 ---
 
@@ -50,13 +50,17 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 - **Registration flow** — auto-detected Telegram name, confirm/edit, gender, country
 - **Country search** — inline keyboard with live search for 195+ countries + flags
 - **Slot booking** — date picker → time picker → confirm, with full validation
-- **Channel auto-assignment** — fills channels in priority order; moves to next at 70% capacity
-- **Reservation management** — view and cancel future reservations
+- **Smart channel prioritization** — slots displayed from Channel 1 first; Channel 2+ unlocks per-day when the preceding channel reaches 70% fill ratio
+- **Reservation management** — view upcoming reservations and cancel future ones
+- **Reservation lifecycle** — scheduler auto-transitions past `active` reservations to `completed` every 30 minutes; only future slots count toward the active limit
+- **Same-day booking cutoff** — bookings for today blocked after 12:00 PM (noon) in both UI and backend
+- **Same-day cancellation cutoff** — cancelling today's reservation blocked after 12:00 PM; future days always cancellable
 - **Profile editing** — name, gender, country (never changes telegram_id)
 - **Race-condition protection** — Redis distributed lock per slot + DB `SELECT FOR UPDATE NOWAIT`
+- **Re-booking after cancellation** — partial unique index (`WHERE status = 'active'`) allows the same slot to be booked again after cancellation
 - **Rate limiting** — sliding window, 30 req/min per user
 - **Anti-flood** — 500ms minimum between actions
-- **Slot generation** — APScheduler generates 14-day slots at midnight & 6 AM
+- **Slot generation** — APScheduler generates 14-day rolling slots at midnight & 6 AM
 - **Structured logging** — JSON via structlog
 - **Health endpoint** — `/health` checks DB + Redis
 - **Webhook + Polling modes** — webhook for production, polling for dev
@@ -161,15 +165,19 @@ is_active          username            capacity
                    is_active
                    is_banned
 
-reservation_slots      reservations           audit_logs
-─────────────────      ────────────           ──────────
-id (PK)                id (PK)                id (PK)
-slot_datetime (UQ)     user_id (FK)           user_id (FK)
-is_booked              slot_id (FK, UQ)       action
-                       channel_id (FK)        entity_type
-                       status                 details
-                       notes                  created_at
+reservation_slots              reservations                    audit_logs
+─────────────────              ────────────                    ──────────
+id (PK)                        id (PK)                         id (PK)
+slot_datetime                  user_id (FK)                    user_id (FK)
+channel_id (FK)                slot_id (FK)                    action
+is_booked                      channel_id (FK)                 entity_type
+UQ: (slot_datetime,            status ¹                        details
+     channel_id)               notes                           created_at
 ```
+
+> ¹ `status` values: `active` · `completed` · `cancelled` · `expired`
+>
+> Partial unique index on `reservations(slot_id) WHERE status = 'active'` — allows re-booking a slot after its reservation is cancelled or completed.
 
 ---
 
@@ -177,25 +185,32 @@ is_booked              slot_id (FK, UQ)       action
 
 | Rule | Value |
 |---|---|
-| Sessions per day | 1 |
-| Max simultaneous active reservations | 10 |
+| Sessions per day (per user) | 1 |
+| Max active (future) reservations | 10 |
 | Booking window | Next 14 days |
 | Session hours | 4:00 PM – 12:00 AM (Asia/Baghdad) |
 | Slot duration | 30 minutes |
-| Channel switch threshold | 70% capacity |
+| Same-day booking cutoff | 12:00 PM noon — today's date hidden after cutoff |
+| Same-day cancellation cutoff | 12:00 PM noon — cancel button hidden after cutoff |
+| Channel unlock threshold | 70% daily fill ratio of preceding channel |
+| Lifecycle job interval | Every 30 minutes (`active` → `completed` for past slots) |
 
 ---
 
 ## Channel Management
 
-Channels are assigned automatically — the user never picks a channel.
+Users book **slots**, not channels — channel assignment is transparent.
 
-1. All active channels are ordered by `priority` (ascending).
-2. For each channel, the system calculates `active_reservations / capacity`.
-3. The first channel below the `CHANNEL_CAPACITY_THRESHOLD` (default 70%) is selected.
-4. If no channel has space, the reservation is rejected with a clear error.
+Each active channel gets its own set of slots per day. Channels are exposed to users in priority order using a **fill-ratio gate**:
 
-To add a new channel, insert a row into the `channels` table with a higher `priority` value.
+1. **Channel 1** slots are always shown first ("Recommended Slots").
+2. The system computes Channel 1's daily fill ratio: `active_reservations_today / slots_per_day`.
+3. Once the ratio reaches `CHANNEL_CAPACITY_THRESHOLD` (default 70%), Channel 2 slots become visible ("More Available Slots").
+4. The same rule cascades — Channel 3 unlocks when Channel 2 reaches 70%, and so on.
+
+The channel a slot belongs to is determined at slot-generation time. The `(slot_datetime, channel_id)` pair is unique, so each channel has its own parallel set of slots per day.
+
+To add a channel: insert a row into the `channels` table with the appropriate `priority` value and redeploy (the slot-generation scheduler will pick it up).
 
 ---
 
@@ -207,10 +222,15 @@ To add a new channel, insert a row into the `channels` table with a higher `prio
 | `POSTGRES_PASSWORD` | **required** | DB password |
 | `WEBHOOK_URL` | empty | Public HTTPS URL; empty = polling mode |
 | `WEBHOOK_SECRET` | empty | Telegram webhook secret token |
-| `TIMEZONE` | `Asia/Baghdad` | System timezone for slot scheduling |
-| `MAX_ACTIVE_RESERVATIONS` | `10` | Max reservations per user |
+| `TIMEZONE` | `Asia/Baghdad` | System timezone for all datetime logic |
+| `MAX_ACTIVE_RESERVATIONS` | `10` | Max future active reservations per user |
 | `MAX_RESERVATION_DAYS_AHEAD` | `14` | Booking window in days |
-| `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Fraction to trigger channel switch |
+| `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Daily fill ratio to unlock the next channel |
+| `SAME_DAY_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day booking is blocked |
+| `SAME_DAY_CANCEL_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day cancellation is blocked |
+| `SLOT_START_HOUR` | `16` | First slot hour of the day |
+| `SLOT_END_HOUR` | `24` | Last slot boundary (exclusive) |
+| `SLOT_DURATION_MINUTES` | `30` | Slot length in minutes |
 | `RATE_LIMIT_REQUESTS` | `30` | Requests allowed per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window |
 | `ANTI_FLOOD_SECONDS` | `0.5` | Minimum seconds between user actions |
@@ -228,7 +248,8 @@ The architecture is designed for clean admin panel addition:
 - **`audit_logs` table** tracks all user actions
 - **`channels` table** fully manageable via DB / API
 - **`users.is_banned`** flag ready for blacklist feature
-- **`reservations.status`** enum supports: `active`, `cancelled`, `completed`, `no_show`
+- **`reservations.status`** lifecycle: `active` → `completed` (auto), `cancelled` (user), `expired` (future admin use)
+- **`booking_rules.py`** contains pure, stateless policy functions (`is_same_day_cutoff_passed`, `can_cancel_reservation`) — easily unit-tested and reusable outside the bot
 - FastAPI already running — add `/admin` routers without touching bot code
 
 ---
