@@ -1,12 +1,15 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
+import sqlalchemy as sa
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.models.slot import ReservationSlot
+from app.db.models.user import User
 from app.repositories.base import BaseRepository
 
 
@@ -123,3 +126,29 @@ class ReservationRepository(BaseRepository[Reservation]):
             status=ReservationStatus.ACTIVE,
         )
         return await self.save(reservation)
+
+    async def get_active_reservations_for_date_and_channel(
+        self, channel_id: uuid.UUID, target_date: date
+    ) -> list[Reservation]:
+        """Return all ACTIVE reservations for a specific channel on target_date (Baghdad tz),
+        sorted by slot time. Eagerly loads user→country and slot for broadcast rendering."""
+        stmt = (
+            select(Reservation)
+            .join(Reservation.slot)
+            .where(
+                Reservation.channel_id == channel_id,
+                Reservation.status == ReservationStatus.ACTIVE,
+                sa.cast(
+                    sa.func.timezone(settings.TIMEZONE, ReservationSlot.slot_datetime),
+                    sa.Date,
+                )
+                == target_date,
+            )
+            .options(
+                selectinload(Reservation.user).selectinload(User.country_rel),
+                selectinload(Reservation.slot),
+            )
+            .order_by(ReservationSlot.slot_datetime.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())

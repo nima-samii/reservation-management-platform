@@ -1,7 +1,7 @@
 # 19-Step English Learning — Reservation Bot
 
 A production-grade Telegram bot for booking live English-learning session slots.
-Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlchemy 2 async**, **Redis**, and **Docker**.
+Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlchemy 2 async**, **Redis**, **APScheduler**, and **Docker**.
 
 ---
 
@@ -22,14 +22,18 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
           │  Middlewares → Routers → Handlers   │
           └──┬────────────┬──────────────────┬──┘
              │            │                  │
-     ┌───────▼──┐  ┌──────▼──────┐  ┌───────▼──────┐
-     │ Services │  │ Repositories│  │  Schedulers  │
-     │  layer   │  │   (async)   │  │  (APSched)   │
-     └───────┬──┘  └──────┬──────┘  └───────┬──────┘
-             │            │                  │
-     ┌───────▼────────────▼──────────────────▼──────┐
-     │           PostgreSQL  ·  Redis                │
-     └───────────────────────────────────────────────┘
+     ┌───────▼──┐  ┌──────▼──────┐  ┌───────▼──────────────────┐
+     │ Services │  │ Repositories│  │  APScheduler Jobs         │
+     │  layer   │  │   (async)   │  │  • slot generation        │
+     └───────┬──┘  └──────┬──────┘  │  • reservation lifecycle  │
+             │            │         │  • same-day reminders      │
+             │            │         │  • pre-session reminders   │
+             │            │         │  • daily broadcast         │
+             │            │         └───────────────┬────────────┘
+             │            │                         │
+     ┌───────▼────────────▼─────────────────────────▼──────┐
+     │              PostgreSQL  ·  Redis                    │
+     └──────────────────────────────────────────────────────┘
 ```
 
 ### Clean Architecture Layers
@@ -40,30 +44,63 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 | **Services** | Business logic, orchestration, rule enforcement |
 | **Repositories** | Data access — all DB queries live here |
 | **Models** | SQLAlchemy ORM entities |
-| **Cache** | Redis client, rate limiting, distributed locks |
-| **Schedulers** | Slot generation + reservation lifecycle transitions |
+| **Cache** | Redis client, key factory, distributed locks |
+| **Schedulers** | Background jobs: slot generation, lifecycle, reminders, broadcast |
+| **Templates** | Jinja2 templates for broadcast message rendering |
 
 ---
 
 ## Features
 
+### Core Booking
+
 - **Registration flow** — auto-detected Telegram name, confirm/edit, gender, country
 - **Country search** — inline keyboard with live search for 195+ countries + flags
 - **Slot booking** — date picker → time picker → confirm, with full validation
-- **Smart channel prioritization** — slots displayed from Channel 1 first; Channel 2+ unlocks per-day when the preceding channel reaches 70% fill ratio
+- **Smart channel prioritization** — slots from Channel 1 first; Channel 2+ unlocks when Channel 1 reaches the 70% fill threshold
 - **Reservation management** — view upcoming reservations and cancel future ones
 - **Reservation lifecycle** — scheduler auto-transitions past `active` reservations to `completed` every 30 minutes; only future slots count toward the active limit
-- **Same-day booking cutoff** — bookings for today blocked after 12:00 PM (noon) in both UI and backend
-- **Same-day cancellation cutoff** — cancelling today's reservation blocked after 12:00 PM; future days always cancellable
-- **Profile editing** — name, gender, country (never changes telegram_id)
-- **Race-condition protection** — Redis distributed lock per slot + DB `SELECT FOR UPDATE NOWAIT`
-- **Re-booking after cancellation** — partial unique index (`WHERE status = 'active'`) allows the same slot to be booked again after cancellation
-- **Rate limiting** — sliding window, 30 req/min per user
-- **Anti-flood** — 500ms minimum between actions
-- **Slot generation** — APScheduler generates 14-day rolling slots at midnight & 6 AM
-- **Structured logging** — JSON via structlog
-- **Health endpoint** — `/health` checks DB + Redis
-- **Webhook + Polling modes** — webhook for production, polling for dev
+- **Same-day booking cutoff** — bookings blocked after 12:00 PM in both UI and backend
+- **Same-day cancellation cutoff** — cancel button hidden and backend rejects after 12:00 PM; future days always cancellable
+- **Profile editing** — name, gender, country
+
+### Participation Score
+
+- **+1** awarded on successful booking; **−1** on cancellation
+- Reserve + cancel nets zero — farming is blocked by design
+- Immutable `score_transactions` audit ledger — every delta is a permanent row
+- Atomic SQL updates (`participation_score = participation_score + delta`) — no read-modify-write race
+- Score visible in user profile and in daily broadcasts
+- Extensible: no-show penalty and admin manual adjustment already implemented
+
+### Notification & Reminder System
+
+- **Same-day reminder** — sent at `SAME_DAY_REMINDER_HOUR` (default 12:00 PM) to every user with a reservation on that day; includes channel name and invite link
+- **Pre-session reminder** — sent `PRE_SESSION_REMINDER_MINUTES` (default 30) minutes before session start; scheduler polls every 5 minutes with a ±5-minute window to tolerate jitter
+- **Duplicate prevention** — `notification_logs` table with `UNIQUE(reservation_id, reminder_type)`; already-sent reminders are excluded by a NOT IN subquery before any message is attempted
+- **Failure isolation** — each user is processed independently; a blocked bot or deleted account logs a `FAILED` row and does not affect other deliveries
+- **Redis locks** prevent concurrent runs across multiple instances
+
+### Daily Schedule Broadcast
+
+- **Per-channel broadcast** — at `DAILY_BROADCAST_HOUR` (default 12:00 PM), today's session schedule is published to every active Telegram channel
+- **Channel isolation** — each channel receives only its own reservations; timezone-correct date casting (`AT TIME ZONE`) for accurate local-day filtering
+- **Jinja2 template** — message layout lives in `app/templates/schedule_message.j2`; update the template without touching Python
+- **Reservation entries** — each entry shows time, clock emoji, gender emoji, country flag, public user ID, and participation score
+- **Special event blocks** — insert rows into `schedule_events` (with `channel_id=NULL` for global events) to inject custom blocks (e.g. "Collective Dhikr") without code changes
+- **Auto-pin** — new broadcast is pinned; previous day's message is unpinned (controlled by `ENABLE_BROADCAST_AUTO_PIN` and `DELETE_PREVIOUS_BROADCAST`)
+- **Deduplication** — `broadcast_logs` with `UNIQUE(channel_id, broadcast_date)` prevents double-broadcast; failed attempts are retried on the next run
+- **Full audit trail** — every broadcast outcome (sent/failed + `telegram_message_id`) stored in `broadcast_logs` for future retries and admin tooling
+
+### Reliability
+
+- Race-condition protection — Redis distributed lock per slot + `SELECT FOR UPDATE NOWAIT`
+- Re-booking after cancellation — partial unique index (`WHERE status = 'active'`) allows a slot to be booked again
+- Rate limiting — sliding window, 30 req/min per user
+- Anti-flood — 500ms minimum between actions
+- Structured JSON logging via structlog
+- Health endpoint — `/health` checks DB + Redis
+- Webhook + Polling modes — webhook for production, polling for dev
 
 ---
 
@@ -72,36 +109,260 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 ```
 19-step/
 ├── app/
-│   ├── api/                  # FastAPI app, webhook & health routers
+│   ├── api/                      # FastAPI app, webhook & health routers
 │   ├── bot/
-│   │   ├── handlers/         # Aiogram update handlers
-│   │   ├── keyboards/        # Reply + Inline keyboards
-│   │   ├── middlewares/      # Rate limit, anti-flood, session, user context
-│   │   ├── states/           # FSM state groups
-│   │   └── filters/          # IsRegistered / IsNotRegistered
-│   ├── cache/                # Redis client + key factory
-│   ├── core/                 # Config (pydantic-settings), logging, exceptions
+│   │   ├── client.py             # Shared Bot singleton for scheduler jobs
+│   │   ├── handlers/             # Aiogram update handlers
+│   │   ├── keyboards/            # Reply + Inline keyboards
+│   │   ├── middlewares/          # Rate limit, anti-flood, session, user context
+│   │   ├── states/               # FSM state groups
+│   │   └── filters/
+│   ├── cache/                    # Redis client + key factory (all keys centralised)
+│   ├── core/                     # Config (pydantic-settings), logging, exceptions
 │   ├── db/
-│   │   ├── base.py           # DeclarativeBase, mixins
-│   │   ├── session.py        # Async engine + session factory
-│   │   └── models/           # ORM models
-│   ├── repositories/         # Data-access layer
-│   ├── schedulers/           # APScheduler setup + jobs
-│   ├── services/             # Business logic
-│   └── utils/                # Datetime helpers
-├── migrations/               # Alembic env + versions
+│   │   ├── base.py               # DeclarativeBase, UUID/Timestamp mixins
+│   │   ├── session.py            # Async engine + session factory
+│   │   └── models/               # ORM models (all imported in __init__.py)
+│   ├── repositories/             # Data-access layer — one class per aggregate
+│   ├── schedulers/
+│   │   ├── setup.py              # APScheduler wiring — all jobs registered here
+│   │   └── jobs/                 # One module per job function
+│   │       ├── slot_generation.py
+│   │       ├── reservation_lifecycle.py
+│   │       ├── reminders.py      # same-day + pre-session reminder jobs
+│   │       └── broadcast.py      # daily schedule broadcast job
+│   ├── services/                 # Business logic
+│   │   ├── broadcast.py          # BroadcastService — per-channel orchestration
+│   │   ├── notification.py       # NotificationService + ReminderService
+│   │   ├── schedule_formatter.py # Jinja2 renderer for broadcast messages
+│   │   ├── reservation.py
+│   │   ├── score.py              # ParticipationScoreService
+│   │   ├── slot.py
+│   │   └── user.py
+│   ├── templates/
+│   │   └── schedule_message.j2   # Broadcast message template
+│   └── utils/
+├── migrations/
+│   └── versions/
+│       ├── 0001_initial_schema.py
+│       ├── 0002_add_channel_to_slots.py
+│       ├── 0003_partial_unique_slot_reservation.py
+│       ├── 0004_reservation_lifecycle_indexes.py
+│       ├── 0005_participation_score.py
+│       ├── 0006_notification_logs.py
+│       └── 0007_broadcast_and_schedule_events.py
+├── tests/
+│   ├── conftest.py
+│   └── test_services/
+│       ├── test_schedule_formatter.py
+│       └── test_broadcast.py
 ├── scripts/
-│   └── seed_countries.py     # One-time country seeder
-├── docker/
-│   └── Dockerfile
-├── docker-compose.yml        # Production compose
-├── docker-compose.dev.yml    # Dev override (polling mode)
-├── main_polling.py           # Local dev entrypoint
-├── alembic.ini
-├── requirements.txt
-├── pyproject.toml
+│   └── seed_countries.py
+├── docker/Dockerfile
+├── docker-compose.yml
+├── main_polling.py
 └── .env.example
 ```
+
+---
+
+## Scheduled Jobs
+
+All jobs run inside the same process as the bot (APScheduler with `AsyncIOScheduler`). Redis distributed locks prevent concurrent runs in multi-instance deployments.
+
+| Job | Schedule | Description |
+|---|---|---|
+| `slot_generation` | 00:00 & 06:00 daily | Generate slots for the next 14 days across all active channels |
+| `reservation_lifecycle` | Every 30 min | Transition past `active` reservations → `completed` |
+| `same_day_reminders` | `SAME_DAY_REMINDER_HOUR`:00 daily | Send today's session reminder to all users with a reservation |
+| `pre_session_reminders` | Every 5 min | Send pre-session reminder to users whose slot starts in ~`PRE_SESSION_REMINDER_MINUTES` min |
+| `daily_broadcast` | `DAILY_BROADCAST_HOUR`:00 daily | Publish today's schedule to each active Telegram channel |
+
+---
+
+## Database Schema
+
+```
+countries          users                        channels
+──────────         ──────────────────────────── ──────────────────
+id (PK)            id (PK)                      id (PK)
+code (UQ)          telegram_id (UQ)             name
+name (UQ)          public_user_code (UQ)        telegram_channel_id
+flag_emoji         full_name                    invite_link
+is_active          username                     capacity
+                   gender                       priority
+                   country_id (FK)              is_active
+                   participation_score  ←score
+                   is_active
+                   is_banned
+
+reservation_slots              reservations
+─────────────────              ────────────────────────────────
+id (PK)                        id (PK)
+slot_datetime                  user_id (FK)
+channel_id (FK)                slot_id (FK)
+is_booked                      channel_id (FK)
+UQ: (slot_datetime,            status ¹
+     channel_id)               notes
+
+score_transactions             notification_logs
+──────────────────             ─────────────────────────────
+id (PK)                        id (PK)
+user_id (FK)                   reservation_id (FK)
+reservation_id (FK)            reminder_type  ²
+transaction_type               status  ³
+score_delta                    error_message
+reason                         sent_at
+meta (JSONB)                   UQ: (reservation_id, reminder_type)
+created_at
+
+schedule_events                broadcast_logs
+───────────────                ──────────────────────────────
+id (PK)                        id (PK)
+channel_id (FK, nullable)      channel_id (FK, nullable)
+event_date                     telegram_message_id
+title                          broadcast_date
+sort_order                     status  ⁴
+is_active                      error_message
+                               sent_at
+                               UQ: (channel_id, broadcast_date)
+```
+
+> ¹ `reservation.status`: `active` · `completed` · `cancelled` · `expired`
+>
+> ² `notification_logs.reminder_type`: `same_day` · `pre_session`
+>
+> ³ `notification_logs.status`: `sent` · `failed`
+>
+> ⁴ `broadcast_logs.status`: `sent` · `failed`
+>
+> Partial unique index on `reservations(slot_id) WHERE status = 'active'` — allows re-booking after cancellation.
+
+---
+
+## Reservation Rules
+
+| Rule | Value |
+|---|---|
+| Sessions per day (per user) | 1 |
+| Max active (future) reservations | 10 |
+| Booking window | Next 14 days |
+| Session hours | 4:00 PM – 12:00 AM (Asia/Baghdad) |
+| Slot duration | 30 minutes |
+| Same-day booking cutoff | 12:00 PM — today's slots hidden after cutoff |
+| Same-day cancellation cutoff | 12:00 PM — cancel button hidden after cutoff |
+| Channel unlock threshold | 70% daily fill ratio of preceding channel |
+| Lifecycle job interval | Every 30 minutes (`active` → `completed`) |
+
+---
+
+## Channel Management
+
+Users book **slots**, not channels — channel assignment is transparent to the user.
+
+Each active channel gets its own set of slots per day. Channels are exposed to users in priority order using a **fill-ratio gate**:
+
+1. **Channel 1** slots are always shown first ("Recommended Slots").
+2. Once Channel 1's daily fill ratio reaches `CHANNEL_CAPACITY_THRESHOLD` (default 70%), Channel 2 slots become visible ("More Available Slots").
+3. The same rule cascades for Channel 3, 4, etc.
+
+**Daily broadcast**: at `DAILY_BROADCAST_HOUR` each channel receives its own schedule message — containing only that channel's reservations. The bot must be an admin in each channel with **Post messages** and **Pin messages** permissions.
+
+**Adding a channel**: insert a row into the `channels` table with the appropriate `priority` value, add `CHANNEL_N_*` variables to `.env`, and redeploy. The slot-generation scheduler picks it up automatically.
+
+---
+
+## Broadcast Message Format
+
+Each channel's daily broadcast looks like this:
+
+```
+📅 Live Sessions Today
+Echoes  •  Wednesday, May 29, 2026
+🌍 Asia/Baghdad
+
+━━━━━━━━━━━━━━━━━━━━━
+
+🕓 4:00 PM
+👩‍💼 🇲🇾 Malaysia  │  ID: ABC123  │  ⭐ 20
+
+🕔 5:00 PM
+👨‍💼 🇮🇶 Iraq  │  ID: XY7890  │  ⭐ 15
+
+━━━━━━━━━━━━━━━━━━━━━
+
+🕌 Collective Dhikr (Salawat Gathering)
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📌 Reserve your session via the bot.
+
+📺 Echoes → https://t.me/+...
+```
+
+The layout is rendered by `app/templates/schedule_message.j2`. Special event blocks (e.g. "Collective Dhikr") are injected from the `schedule_events` table — set `channel_id = NULL` for a block that appears in all channels.
+
+---
+
+## Environment Variables
+
+### Core
+
+| Variable | Default | Description |
+|---|---|---|
+| `BOT_TOKEN` | **required** | Telegram Bot API token |
+| `POSTGRES_PASSWORD` | **required** | Database password |
+| `WEBHOOK_URL` | empty | Public HTTPS URL; empty = polling mode |
+| `WEBHOOK_SECRET` | empty | Telegram webhook secret token |
+| `TIMEZONE` | `Asia/Baghdad` | pytz timezone for all datetime logic and scheduling |
+
+### Reservation Rule Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_ACTIVE_RESERVATIONS` | `10` | Max future active reservations per user |
+| `MAX_RESERVATION_DAYS_AHEAD` | `14` | Booking window in days |
+| `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Daily fill ratio to unlock the next channel |
+| `SAME_DAY_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day booking is blocked |
+| `SAME_DAY_CANCEL_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day cancellation is blocked |
+| `SLOT_START_HOUR` | `16` | First slot hour of the day |
+| `SLOT_END_HOUR` | `24` | Last slot boundary (exclusive) |
+| `SLOT_DURATION_MINUTES` | `30` | Slot length in minutes |
+
+### Notifications & Reminders
+
+| Variable | Default | Description |
+|---|---|---|
+| `SAME_DAY_REMINDER_HOUR` | `12` | Hour (0–23) same-day reminders are dispatched |
+| `PRE_SESSION_REMINDER_MINUTES` | `30` | Minutes before session start for pre-session reminder |
+
+### Daily Broadcast
+
+| Variable | Default | Description |
+|---|---|---|
+| `DAILY_BROADCAST_HOUR` | `12` | Hour (0–23) daily schedule is published to each channel |
+| `ENABLE_BROADCAST_AUTO_PIN` | `true` | Pin the broadcast message after sending |
+| `DELETE_PREVIOUS_BROADCAST` | `false` | Delete yesterday's broadcast when publishing today's |
+
+### Channels
+
+| Variable | Description |
+|---|---|
+| `CHANNEL_N_ID` | Telegram channel/group ID (negative integer) |
+| `CHANNEL_N_NAME` | Display name used in confirmations, reminders, and broadcasts |
+| `CHANNEL_N_INVITE` | Public invite link included in reminders and the daily broadcast |
+
+Add `CHANNEL_2_*`, `CHANNEL_3_*` etc. to register additional channels. Channels are loaded dynamically — no code changes required.
+
+### Rate Limiting & Other
+
+| Variable | Default | Description |
+|---|---|---|
+| `RATE_LIMIT_REQUESTS` | `30` | Requests per window per user |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window |
+| `ANTI_FLOOD_SECONDS` | `0.5` | Minimum seconds between user actions |
+| `LOG_FORMAT` | `json` | `json` (production) or `console` (dev) |
+| `ADMIN_IDS` | empty | Comma-separated Telegram user IDs for admins |
 
 ---
 
@@ -113,7 +374,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 git clone <repo>
 cd 19-step
 cp .env.example .env
-# Edit .env — set BOT_TOKEN and POSTGRES_PASSWORD at minimum
+# Edit .env — set BOT_TOKEN, POSTGRES_PASSWORD, and CHANNEL_1_* at minimum
 ```
 
 ### 2. Run with Docker (recommended)
@@ -127,130 +388,20 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
 Docker Compose will:
+
 1. Start PostgreSQL and Redis
-2. Run `alembic upgrade head`
+2. Run `alembic upgrade head` (all 7 migrations)
 3. Run `seed_countries.py`
-4. Start the application
+4. Start the application with all scheduled jobs active
 
 ### 3. Local development (no Docker)
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Set up .env, then run migrations
 alembic upgrade head
-
-# Seed countries
 python scripts/seed_countries.py
-
-# Run in polling mode
 python main_polling.py
 ```
-
----
-
-## Database Schema
-
-```
-countries          users               channels
-──────────         ──────────          ──────────
-id (PK)            id (PK)             id (PK)
-code (UQ)          telegram_id (UQ)    name
-name (UQ)          public_user_code    telegram_channel_id
-flag_emoji         full_name           invite_link
-is_active          username            capacity
-                   gender              priority
-                   country_id (FK)     is_active
-                   is_active
-                   is_banned
-
-reservation_slots              reservations                    audit_logs
-─────────────────              ────────────                    ──────────
-id (PK)                        id (PK)                         id (PK)
-slot_datetime                  user_id (FK)                    user_id (FK)
-channel_id (FK)                slot_id (FK)                    action
-is_booked                      channel_id (FK)                 entity_type
-UQ: (slot_datetime,            status ¹                        details
-     channel_id)               notes                           created_at
-```
-
-> ¹ `status` values: `active` · `completed` · `cancelled` · `expired`
->
-> Partial unique index on `reservations(slot_id) WHERE status = 'active'` — allows re-booking a slot after its reservation is cancelled or completed.
-
----
-
-## Reservation Rules
-
-| Rule | Value |
-|---|---|
-| Sessions per day (per user) | 1 |
-| Max active (future) reservations | 10 |
-| Booking window | Next 14 days |
-| Session hours | 4:00 PM – 12:00 AM (Asia/Baghdad) |
-| Slot duration | 30 minutes |
-| Same-day booking cutoff | 12:00 PM noon — today's date hidden after cutoff |
-| Same-day cancellation cutoff | 12:00 PM noon — cancel button hidden after cutoff |
-| Channel unlock threshold | 70% daily fill ratio of preceding channel |
-| Lifecycle job interval | Every 30 minutes (`active` → `completed` for past slots) |
-
----
-
-## Channel Management
-
-Users book **slots**, not channels — channel assignment is transparent.
-
-Each active channel gets its own set of slots per day. Channels are exposed to users in priority order using a **fill-ratio gate**:
-
-1. **Channel 1** slots are always shown first ("Recommended Slots").
-2. The system computes Channel 1's daily fill ratio: `active_reservations_today / slots_per_day`.
-3. Once the ratio reaches `CHANNEL_CAPACITY_THRESHOLD` (default 70%), Channel 2 slots become visible ("More Available Slots").
-4. The same rule cascades — Channel 3 unlocks when Channel 2 reaches 70%, and so on.
-
-The channel a slot belongs to is determined at slot-generation time. The `(slot_datetime, channel_id)` pair is unique, so each channel has its own parallel set of slots per day.
-
-To add a channel: insert a row into the `channels` table with the appropriate `priority` value and redeploy (the slot-generation scheduler will pick it up).
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `BOT_TOKEN` | **required** | Telegram Bot API token |
-| `POSTGRES_PASSWORD` | **required** | DB password |
-| `WEBHOOK_URL` | empty | Public HTTPS URL; empty = polling mode |
-| `WEBHOOK_SECRET` | empty | Telegram webhook secret token |
-| `TIMEZONE` | `Asia/Baghdad` | System timezone for all datetime logic |
-| `MAX_ACTIVE_RESERVATIONS` | `10` | Max future active reservations per user |
-| `MAX_RESERVATION_DAYS_AHEAD` | `14` | Booking window in days |
-| `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Daily fill ratio to unlock the next channel |
-| `SAME_DAY_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day booking is blocked |
-| `SAME_DAY_CANCEL_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day cancellation is blocked |
-| `SLOT_START_HOUR` | `16` | First slot hour of the day |
-| `SLOT_END_HOUR` | `24` | Last slot boundary (exclusive) |
-| `SLOT_DURATION_MINUTES` | `30` | Slot length in minutes |
-| `RATE_LIMIT_REQUESTS` | `30` | Requests allowed per window |
-| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window |
-| `ANTI_FLOOD_SECONDS` | `0.5` | Minimum seconds between user actions |
-| `LOG_FORMAT` | `json` | `json` (production) or `console` (dev) |
-| `ADMIN_IDS` | empty | Comma-separated telegram IDs for admins |
-
----
-
-## Admin Panel Readiness
-
-The architecture is designed for clean admin panel addition:
-
-- **Services** contain all business logic with no Telegram coupling → reusable from admin HTTP endpoints
-- **Repositories** are injectable → testable and reusable
-- **`audit_logs` table** tracks all user actions
-- **`channels` table** fully manageable via DB / API
-- **`users.is_banned`** flag ready for blacklist feature
-- **`reservations.status`** lifecycle: `active` → `completed` (auto), `cancelled` (user), `expired` (future admin use)
-- **`booking_rules.py`** contains pure, stateless policy functions (`is_same_day_cutoff_passed`, `can_cancel_reservation`) — easily unit-tested and reusable outside the bot
-- FastAPI already running — add `/admin` routers without touching bot code
 
 ---
 
@@ -260,14 +411,35 @@ The architecture is designed for clean admin panel addition:
 pytest tests/ -v
 ```
 
+Test coverage includes:
+
+- `test_schedule_formatter.py` — 20 tests covering clock emojis, time formatting, all template rendering paths (empty schedule, entries, events, country flags, gender emojis, invite links)
+- `test_broadcast.py` — 8 tests covering deduplication, per-channel isolation, Telegram failure handling, pin/unpin lifecycle
+
+---
+
+## Admin Panel Readiness
+
+The architecture supports clean admin panel addition without touching bot code:
+
+- **Services** contain all business logic with no Telegram coupling → reusable from HTTP endpoints
+- **Repositories** are injectable and independently testable
+- **`audit_logs`** tracks all user actions
+- **`score_transactions`** provides an immutable score history per user
+- **`broadcast_logs`** stores `telegram_message_id` for future editable/retryable broadcasts
+- **`schedule_events`** allows admins to inject special schedule blocks without deployment
+- **`users.is_banned`** flag ready for blacklist feature
+- **`participation_score`** ready for leaderboards and gamification
+- FastAPI already running — add `/admin` routers without touching bot code
+
 ---
 
 ## Security Notes
 
-- Webhook secret token validated on every update
+- Webhook secret token validated on every incoming update
 - Non-root Docker user
-- No hardcoded secrets — all via environment variables
-- SQL injection impossible — SQLAlchemy ORM + parameterized queries
-- Redis slot locks prevent race conditions on booking
+- No hardcoded secrets — all configuration via environment variables
+- SQL injection impossible — SQLAlchemy ORM + parameterized queries only
+- Redis slot locks prevent race conditions on concurrent booking
 - `SELECT FOR UPDATE NOWAIT` prevents double-booking at the DB level
 - Rate limiting and anti-flood on all user interactions

@@ -3,6 +3,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.schedulers.jobs.broadcast import send_daily_schedule_job
 from app.schedulers.jobs.reminders import send_pre_session_reminders_job, send_same_day_reminders_job
 from app.schedulers.jobs.reservation_lifecycle import complete_past_reservations_job
 from app.schedulers.jobs.slot_generation import generate_upcoming_slots
@@ -33,10 +34,10 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
 
-    # Run once at 12:00 PM Baghdad time — reminds users of today's sessions
+    # Run at the configured reminder hour — reminds users of today's sessions
     scheduler.add_job(
         send_same_day_reminders_job,
-        trigger=CronTrigger(hour=12, minute=0, timezone=settings.TIMEZONE),
+        trigger=CronTrigger(hour=settings.SAME_DAY_REMINDER_HOUR, minute=0, timezone=settings.TIMEZONE),
         id="same_day_reminders",
         replace_existing=True,
         max_instances=1,
@@ -48,6 +49,16 @@ def create_scheduler() -> AsyncIOScheduler:
         send_pre_session_reminders_job,
         trigger=CronTrigger(minute="*/5", timezone=settings.TIMEZONE),
         id="pre_session_reminders",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Run at the configured broadcast hour — publishes today's schedule to each channel
+    scheduler.add_job(
+        send_daily_schedule_job,
+        trigger=CronTrigger(hour=settings.DAILY_BROADCAST_HOUR, minute=0, timezone=settings.TIMEZONE),
+        id="daily_broadcast",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

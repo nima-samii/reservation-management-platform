@@ -54,11 +54,12 @@ class ReminderService:
         return sent
 
     async def send_pre_session_reminders(self) -> int:
-        """Send 30-minute-before reminders. Checks a ±5-minute window around the
-        30-minute mark to tolerate scheduler jitter. Returns delivered count."""
+        """Send pre-session reminders. Checks a ±5-minute window around the configured
+        PRE_SESSION_REMINDER_MINUTES mark to tolerate scheduler jitter."""
         now = datetime.now(TZ)
-        from_dt = now + timedelta(minutes=25)
-        to_dt = now + timedelta(minutes=35)
+        window = settings.PRE_SESSION_REMINDER_MINUTES
+        from_dt = now + timedelta(minutes=window - 5)
+        to_dt = now + timedelta(minutes=window + 5)
 
         reservations = await self._notif_repo.get_reservations_for_pre_session_reminder(
             from_dt, to_dt
@@ -78,11 +79,9 @@ class ReminderService:
         channel = slot.channel
 
         slot_local = slot.slot_datetime.astimezone(TZ)
-        hour = slot_local.hour
-        minute = slot_local.minute
-        period = "AM" if hour < 12 else "PM"
-        display_hour = hour if 1 <= hour <= 12 else (hour - 12 if hour > 12 else 12)
-        time_str = f"{display_hour}:{minute:02d} {period}"
+        hour_12 = slot_local.hour % 12 or 12
+        period = "AM" if slot_local.hour < 12 else "PM"
+        time_str = f"{hour_12}:{slot_local.minute:02d} {period}"
 
         text = (
             f"⏰ <b>Live Session Reminder</b>\n\n"
@@ -101,7 +100,7 @@ class ReminderService:
         channel = slot.channel
 
         text = (
-            f"🚀 <b>Your live session starts in 30 minutes.</b>\n\n"
+            f"🚀 <b>Your live session starts in {settings.PRE_SESSION_REMINDER_MINUTES} minutes.</b>\n\n"
             f"📺 Channel:\n{channel.name}\n"
         )
         if channel.invite_link:

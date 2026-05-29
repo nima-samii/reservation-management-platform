@@ -50,3 +50,8 @@ class CacheKey:
     @staticmethod
     def pre_session_reminder_lock() -> str:
         return "lock:reminder:pre_session"
+
+    # Daily schedule broadcast lock (runs once at noon)
+    @staticmethod
+    def daily_broadcast_lock() -> str:
+        return "lock:broadcast:daily"
