@@ -1,7 +1,7 @@
 import uuid
 from enum import Enum
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -10,15 +10,22 @@ from app.db.base import Base, TimestampMixin, UUIDMixin
 
 class ReservationStatus(str, Enum):
     ACTIVE = "active"
-    CANCELLED = "cancelled"
     COMPLETED = "completed"
-    NO_SHOW = "no_show"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 class Reservation(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "reservations"
     __table_args__ = (
-        UniqueConstraint("slot_id", name="uq_reservations_slot"),
+        # Partial unique index: only one ACTIVE reservation per slot.
+        # Cancelled/completed rows don't block re-booking the same slot.
+        Index(
+            "uq_reservations_slot_active",
+            "slot_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(

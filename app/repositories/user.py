@@ -1,7 +1,8 @@
 import random
 import string
+import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -35,6 +36,16 @@ class UserRepository(BaseRepository[User]):
             code = "".join(random.choices(string.digits, k=6))
             if not await self.first_by(public_user_code=code):
                 return code
+
+    async def apply_score_delta(self, user_id: uuid.UUID, delta: int) -> None:
+        """Atomically increment or decrement participation_score without a read-modify-write."""
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(participation_score=User.participation_score + delta)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(stmt)
 
     async def create(
         self,
