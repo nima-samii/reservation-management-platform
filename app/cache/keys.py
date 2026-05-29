@@ -40,3 +40,13 @@ class CacheKey:
     @staticmethod
     def reservation_lifecycle_lock() -> str:
         return "lock:reservation_lifecycle"
+
+    # Same-day reminder lock (runs once at noon)
+    @staticmethod
+    def same_day_reminder_lock() -> str:
+        return "lock:reminder:same_day"
+
+    # Pre-session reminder lock (runs every 5 minutes)
+    @staticmethod
+    def pre_session_reminder_lock() -> str:
+        return "lock:reminder:pre_session"
