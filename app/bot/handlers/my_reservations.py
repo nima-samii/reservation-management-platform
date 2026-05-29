@@ -14,9 +14,8 @@ from app.bot.keyboards.inline.reservations import (
 )
 from app.bot.keyboards.main_menu import MainMenuButton, get_main_menu
 from app.cache.client import redis_client
-from app.core.booking_rules import can_cancel_reservation
 from app.core.config import settings
-from app.core.exceptions import CancellationCutoffError, NotFoundError, PastSlotError
+from app.core.exceptions import NotFoundError, PastSlotError
 from app.core.logging import get_logger
 from app.db.models.user import User
 from app.services.reservation import ReservationService
@@ -94,7 +93,7 @@ async def view_reservation(
 
     slot_dt = res.slot.slot_datetime.astimezone(TZ)
     now = datetime.now(TZ)
-    can_cancel = can_cancel_reservation(slot_dt, now, settings.SAME_DAY_CANCEL_CUTOFF_HOUR)
+    can_cancel = slot_dt > now
 
     await callback.message.edit_text(  # type: ignore[union-attr]
         f"🗓 *Reservation Details*\n\n"
@@ -165,13 +164,6 @@ async def confirm_cancel_reservation(
     except PastSlotError:
         await callback.message.edit_text(  # type: ignore[union-attr]
             "❌ Cannot cancel a past reservation.",
-            parse_mode="Markdown",
-        )
-    except CancellationCutoffError as e:
-        await callback.message.edit_text(  # type: ignore[union-attr]
-            f"⏰ *Cancellation Not Allowed*\n\n"
-            f"{e.message}\n\n"
-            "Future-day reservations can still be cancelled.",
             parse_mode="Markdown",
         )
     except NotFoundError:

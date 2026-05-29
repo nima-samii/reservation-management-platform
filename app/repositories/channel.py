@@ -1,12 +1,8 @@
-import uuid
-from datetime import date
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.channel import Channel
 from app.db.models.reservation import Reservation, ReservationStatus
-from app.db.models.slot import ReservationSlot
 from app.repositories.base import BaseRepository
 
 
@@ -23,18 +19,19 @@ class ChannelRepository(BaseRepository[Channel]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_reservation_count_for_date(
-        self, channel_id: uuid.UUID, slot_date: date
-    ) -> int:
-        """Count active reservations for a channel on a specific calendar date (UTC)."""
-        stmt = (
-            select(func.count(Reservation.id))
-            .join(ReservationSlot, Reservation.slot_id == ReservationSlot.id)
-            .where(
-                Reservation.channel_id == channel_id,
-                Reservation.status == ReservationStatus.ACTIVE,
-                func.date(ReservationSlot.slot_datetime) == slot_date,
-            )
+    async def get_reservation_count(self, channel: Channel) -> int:
+        stmt = select(func.count(Reservation.id)).where(
+            Reservation.channel_id == channel.id,
+            Reservation.status == ReservationStatus.ACTIVE,
         )
         result = await self.session.execute(stmt)
         return result.scalar() or 0
+
+    async def get_assignable_channel(self, threshold: float) -> Channel | None:
+        channels = await self.get_active_channels_ordered()
+        for channel in channels:
+            count = await self.get_reservation_count(channel)
+            fill_ratio = count / channel.capacity if channel.capacity > 0 else 1.0
+            if fill_ratio < threshold:
+                return channel
+        return None

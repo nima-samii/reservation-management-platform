@@ -55,20 +55,6 @@ class PastSlotError(ReservationError):
         super().__init__("Cannot reserve a slot in the past.")
 
 
-class SameDayCutoffError(ReservationError):
-    def __init__(self, cutoff_hour: int = 12) -> None:
-        super().__init__(
-            f"Same-day reservations are closed after {cutoff_hour:02d}:00."
-        )
-
-
-class CancellationCutoffError(ReservationError):
-    def __init__(self, cutoff_hour: int = 12) -> None:
-        super().__init__(
-            f"Same-day cancellations are closed after {cutoff_hour:02d}:00."
-        )
-
-
 class NoChannelAvailableError(ReservationError):
     def __init__(self) -> None:
         super().__init__("No channels are currently available for reservations.")
