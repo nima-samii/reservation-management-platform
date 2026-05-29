@@ -45,10 +45,6 @@ class Settings(BaseSettings):
     MAX_ACTIVE_RESERVATIONS: int = 10
     MAX_RESERVATION_DAYS_AHEAD: int = 14
     CHANNEL_CAPACITY_THRESHOLD: float = 0.70
-    # Hour (0-23, local timezone) after which same-day reservations are blocked
-    SAME_DAY_CUTOFF_HOUR: int = 12
-    # Hour (0-23, local timezone) after which same-day cancellations are blocked
-    SAME_DAY_CANCEL_CUTOFF_HOUR: int = 12
 
     # ── Slot schedule ─────────────────────────────────────────────────────
     SLOT_START_HOUR: int = 16   # 4:00 PM
@@ -59,20 +55,6 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = 30
     RATE_LIMIT_WINDOW_SECONDS: int = 60
     ANTI_FLOOD_SECONDS: float = 0.5
-
-    # ── Notifications & Reminders ─────────────────────────────────────────
-    # Hour (0-23, local timezone) same-day reminders are dispatched
-    SAME_DAY_REMINDER_HOUR: int = 12
-    # Minutes before session start to send the pre-session reminder
-    PRE_SESSION_REMINDER_MINUTES: int = 30
-
-    # ── Daily Broadcast ───────────────────────────────────────────────────
-    # Hour (0-23, local timezone) daily schedule is broadcast to each channel
-    DAILY_BROADCAST_HOUR: int = 12
-    # Pin the broadcast message in the channel after sending
-    ENABLE_BROADCAST_AUTO_PIN: bool = True
-    # Delete the previous day's broadcast when publishing today's
-    DELETE_PREVIOUS_BROADCAST: bool = False
 
     # ── Logging ───────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
