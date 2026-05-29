@@ -32,9 +32,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     scheduler = create_scheduler()
     scheduler.start()
 
-    # Run initial slot generation on startup
+    # Run initial slot generation on startup — force=True clears any stale lock
     from app.schedulers.jobs.slot_generation import generate_upcoming_slots
-    await generate_upcoming_slots()
+    await generate_upcoming_slots(force=True)
 
     # Store references in app state
     app.state.bot = bot

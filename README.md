@@ -60,6 +60,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 - **Smart channel prioritization** — slots from Channel 1 first; Channel 2+ unlocks when Channel 1 reaches the 70% fill threshold
 - **Reservation management** — view upcoming reservations and cancel future ones
 - **Reservation lifecycle** — scheduler auto-transitions past `active` reservations to `completed` every 30 minutes; only future slots count toward the active limit
+- **Special terminal slot** — an optional 11:59 PM slot is appended after the normal 30-minute interval range; it stays on the same calendar day (no midnight rollover), is fully reservable, appears in reminders and broadcasts, and is controlled by `ENABLE_FINAL_MIDNIGHT_SLOT` / `FINAL_SLOT_TIME`
 - **Same-day booking cutoff** — bookings blocked after 12:00 PM in both UI and backend
 - **Same-day cancellation cutoff** — cancel button hidden and backend rejects after 12:00 PM; future days always cancellable
 - **Profile editing** — name, gender, country
@@ -247,8 +248,8 @@ is_active                      error_message
 | Sessions per day (per user) | 1 |
 | Max active (future) reservations | 10 |
 | Booking window | Next 14 days |
-| Session hours | 4:00 PM – 12:00 AM (Asia/Baghdad) |
-| Slot duration | 30 minutes |
+| Session hours | 4:00 PM – 11:30 PM + optional 11:59 PM terminal slot (Asia/Baghdad) |
+| Slot duration | 30 minutes (interval slots); 11:59 PM is a special terminal slot |
 | Same-day booking cutoff | 12:00 PM — today's slots hidden after cutoff |
 | Same-day cancellation cutoff | 12:00 PM — cancel button hidden after cutoff |
 | Channel unlock threshold | 70% daily fill ratio of preceding channel |
@@ -328,6 +329,8 @@ The layout is rendered by `app/templates/schedule_message.j2`. Special event blo
 | `SLOT_START_HOUR` | `16` | First slot hour of the day |
 | `SLOT_END_HOUR` | `24` | Last slot boundary (exclusive) |
 | `SLOT_DURATION_MINUTES` | `30` | Slot length in minutes |
+| `ENABLE_FINAL_MIDNIGHT_SLOT` | `true` | Append a special terminal slot after the interval range |
+| `FINAL_SLOT_TIME` | `23:59` | Time (HH:MM, 24-hour) of the terminal slot — stays on the same calendar day |
 
 ### Notifications & Reminders
 
@@ -413,7 +416,8 @@ pytest tests/ -v
 
 Test coverage includes:
 
-- `test_schedule_formatter.py` — 20 tests covering clock emojis, time formatting, all template rendering paths (empty schedule, entries, events, country flags, gender emojis, invite links)
+- `test_slot_generation.py` — 13 tests covering interval generation, 11:59 PM terminal slot append/disable/dedup, chronological order, same-day calendar integrity, `_slots_per_day` count accuracy
+- `test_schedule_formatter.py` — 25 tests covering clock emojis, time formatting, 11:59 PM rendering (time label, clock emoji, no date rollover), all template rendering paths (empty schedule, entries, events, country flags, gender emojis, invite links)
 - `test_broadcast.py` — 8 tests covering deduplication, per-channel isolation, Telegram failure handling, pin/unpin lifecycle
 
 ---

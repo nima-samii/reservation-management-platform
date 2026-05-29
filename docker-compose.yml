@@ -87,6 +87,7 @@ services:
       dockerfile: docker/Dockerfile
     restart: unless-stopped
     environment:
+      # ── Infrastructure ────────────────────────────────────────────
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-reservations}
@@ -95,16 +96,47 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # ── Bot ───────────────────────────────────────────────────────
       BOT_TOKEN: ${BOT_TOKEN}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
       WEBHOOK_PATH: ${WEBHOOK_PATH:-/webhook}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      # ── Application ───────────────────────────────────────────────
       ENVIRONMENT: ${ENVIRONMENT:-production}
       DEBUG: ${DEBUG:-false}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       TIMEZONE: ${TIMEZONE:-Asia/Baghdad}
       ADMIN_IDS: ${ADMIN_IDS:-}
+      # ── Reservation rules ─────────────────────────────────────────
+      MAX_ACTIVE_RESERVATIONS: ${MAX_ACTIVE_RESERVATIONS:-10}
+      MAX_RESERVATION_DAYS_AHEAD: ${MAX_RESERVATION_DAYS_AHEAD:-14}
+      CHANNEL_CAPACITY_THRESHOLD: ${CHANNEL_CAPACITY_THRESHOLD:-0.70}
+      SAME_DAY_CUTOFF_HOUR: ${SAME_DAY_CUTOFF_HOUR:-12}
+      SAME_DAY_CANCEL_CUTOFF_HOUR: ${SAME_DAY_CANCEL_CUTOFF_HOUR:-12}
+      # ── Slot schedule ─────────────────────────────────────────────
+      SLOT_START_HOUR: ${SLOT_START_HOUR:-16}
+      SLOT_END_HOUR: ${SLOT_END_HOUR:-24}
+      SLOT_DURATION_MINUTES: ${SLOT_DURATION_MINUTES:-30}
+      ENABLE_FINAL_MIDNIGHT_SLOT: ${ENABLE_FINAL_MIDNIGHT_SLOT:-true}
+      FINAL_SLOT_TIME: ${FINAL_SLOT_TIME:-23:59}
+      # ── Notifications & Reminders ─────────────────────────────────
+      SAME_DAY_REMINDER_HOUR: ${SAME_DAY_REMINDER_HOUR:-12}
+      PRE_SESSION_REMINDER_MINUTES: ${PRE_SESSION_REMINDER_MINUTES:-30}
+      # ── Daily Broadcast ───────────────────────────────────────────
+      DAILY_BROADCAST_HOUR: ${DAILY_BROADCAST_HOUR:-12}
+      ENABLE_BROADCAST_AUTO_PIN: ${ENABLE_BROADCAST_AUTO_PIN:-true}
+      DELETE_PREVIOUS_BROADCAST: ${DELETE_PREVIOUS_BROADCAST:-false}
+      # ── Channels ──────────────────────────────────────────────────
+      CHANNEL_1_ID: ${CHANNEL_1_ID:-}
+      CHANNEL_1_NAME: ${CHANNEL_1_NAME:-}
+      CHANNEL_1_INVITE: ${CHANNEL_1_INVITE:-}
+      CHANNEL_2_ID: ${CHANNEL_2_ID:-}
+      CHANNEL_2_NAME: ${CHANNEL_2_NAME:-}
+      CHANNEL_2_INVITE: ${CHANNEL_2_INVITE:-}
+      CHANNEL_3_ID: ${CHANNEL_3_ID:-}
+      CHANNEL_3_NAME: ${CHANNEL_3_NAME:-}
+      CHANNEL_3_INVITE: ${CHANNEL_3_INVITE:-}
     ports:
       - "8000:8000"
     depends_on:

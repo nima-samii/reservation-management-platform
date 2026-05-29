@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     SLOT_START_HOUR: int = 16   # 4:00 PM
     SLOT_END_HOUR: int = 24     # 12:00 AM (midnight)
     SLOT_DURATION_MINUTES: int = 30
+    # Append one special terminal slot at the given time (HH:MM, 24-hour).
+    # Keeps the slot on the same calendar day — avoids midnight rollover.
+    ENABLE_FINAL_MIDNIGHT_SLOT: bool = True
+    FINAL_SLOT_TIME: str = "23:59"
 
     # ── Rate limiting ─────────────────────────────────────────────────────
     RATE_LIMIT_REQUESTS: int = 30

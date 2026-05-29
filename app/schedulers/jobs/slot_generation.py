@@ -10,12 +10,18 @@ logger = get_logger(__name__)
 LOCK_TTL = 300  # 5 minutes — prevents double-run across restarts
 
 
-async def generate_upcoming_slots() -> None:
+async def generate_upcoming_slots(force: bool = False) -> None:
     """
     APScheduler job: generates slots for the next N days.
     Uses a Redis lock to prevent concurrent runs.
+
+    Pass force=True on startup to clear any stale lock and always run.
     """
     lock_key = CacheKey.slot_generation_lock()
+
+    if force:
+        await redis_client.delete(lock_key)
+
     acquired = await redis_client.set_nx(lock_key, "1", ttl=LOCK_TTL)
     if not acquired:
         logger.debug("slot_generation_skipped", reason="lock_held")

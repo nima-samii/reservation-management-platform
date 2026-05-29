@@ -30,8 +30,18 @@ class SlotService:
         return datetime.now(TZ)
 
     def _slots_per_day(self) -> int:
-        end_hour = settings.SLOT_END_HOUR if settings.SLOT_END_HOUR != 24 else 24
-        return int((end_hour - settings.SLOT_START_HOUR) * 60 / settings.SLOT_DURATION_MINUTES)
+        count = int(
+            (settings.SLOT_END_HOUR - settings.SLOT_START_HOUR) * 60
+            / settings.SLOT_DURATION_MINUTES
+        )
+        if settings.ENABLE_FINAL_MIDNIGHT_SLOT:
+            count += 1
+        return count
+
+    def _parse_final_slot_time(self) -> tuple[int, int]:
+        """Parse FINAL_SLOT_TIME ('HH:MM') into (hour, minute)."""
+        parts = settings.FINAL_SLOT_TIME.split(":")
+        return int(parts[0]), int(parts[1])
 
     def _generate_slot_datetimes(self, for_date: date) -> list[datetime]:
         slots: list[datetime] = []
@@ -50,6 +60,13 @@ class SlotService:
         while current < end:
             slots.append(current)
             current += delta
+
+        if settings.ENABLE_FINAL_MIDNIGHT_SLOT:
+            fh, fm = self._parse_final_slot_time()
+            final = TZ.localize(datetime(for_date.year, for_date.month, for_date.day, fh, fm, 0))
+            if final not in slots:
+                slots.append(final)
+
         return slots
 
     async def generate_slots_for_date(self, for_date: date) -> int:

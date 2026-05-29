@@ -202,3 +202,39 @@ class TestScheduleFormatter:
         assert "U001" in text
         assert "U002" in text
         assert "U003" in text
+
+    def test_2359_slot_formats_as_1159_pm(self):
+        reservations = [_make_reservation(23, 59)]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "11:59 PM" in text
+
+    def test_2359_slot_clock_emoji(self):
+        reservations = [_make_reservation(23, 59)]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "🕦" in text
+
+    def test_2359_no_next_day_rollover_in_output(self):
+        reservations = [_make_reservation(23, 59)]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "12:00 AM" not in text
+        assert "May 30" not in text
+
+
+# ── clock_emoji_for: 23:59 special case ───────────────────────────────────────
+
+class TestClockEmojiFor2359:
+    def test_2359_returns_1130_emoji(self):
+        dt = TZ.localize(datetime(2026, 5, 29, 23, 59))
+        assert clock_emoji_for(dt) == "🕦"
+
+    def test_2359_does_not_return_fallback(self):
+        dt = TZ.localize(datetime(2026, 5, 29, 23, 59))
+        assert clock_emoji_for(dt) != "⏰"
+
+
+# ── format_time: 23:59 ────────────────────────────────────────────────────────
+
+class TestFormatTime2359:
+    def test_2359_formats_as_1159_pm(self):
+        dt = TZ.localize(datetime(2026, 5, 29, 23, 59))
+        assert format_time(dt) == "11:59 PM"
