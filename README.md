@@ -464,13 +464,19 @@ make gen-secret
 | `POST /api/admin/auth/refresh` | public | Rotates refresh token (old token invalidated) |
 | `POST /api/admin/auth/logout` | public | Revokes refresh token from Redis |
 | `GET /api/admin/health` | JWT | DB + Redis reachability check |
+| `GET /api/admin/users` | JWT | Paginated user list — search, filter, sort |
+| `GET /api/admin/users/{id}` | JWT | Full user profile + recent 20 score transactions |
+| `PATCH /api/admin/users/{id}` | JWT | Edit name, gender, country, active/ban status |
+| `POST /api/admin/users/{id}/score` | JWT | Admin score adjustment (logged, audit-trailed) |
+| `GET /api/admin/users/{id}/score-history` | JWT | Paginated score transaction history |
+| `GET /api/admin/countries` | JWT | All active countries (for edit dropdowns) |
 
 ### Implementation phases
 
 | Phase | Status | Scope |
 |---|---|---|
 | 1 — Auth & scaffold | ✅ Done | JWT auth, login page, protected routes, Docker wiring |
-| 2 — User management | 🔲 Planned | List/ban users, score adjustment |
+| 2 — User management | ✅ Done | List/search/ban users, inline edit, score adjustment |
 | 3 — Reservations & slots | 🔲 Planned | View/cancel reservations, slot grid |
 | 4 — Schedule events & stats | 🔲 Planned | Inject Dhikr blocks, dashboard stats |
 

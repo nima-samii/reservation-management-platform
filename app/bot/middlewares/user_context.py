@@ -10,6 +10,12 @@ from app.services.user import UserService
 
 logger = structlog.get_logger(__name__)
 
+_BAN_MESSAGE = (
+    "⛔ *Your account has been suspended.*\n\n"
+    "You are no longer able to use this bot.\n"
+    "If you believe this is an error, please contact our support team."
+)
+
 
 class UserContextMiddleware(BaseMiddleware):
     """
@@ -33,6 +39,19 @@ class UserContextMiddleware(BaseMiddleware):
                 svc = UserService(session)
                 user = await svc.get_or_none(from_user.id)
                 if user:
+                    if user.is_banned:
+                        msg = getattr(event, "message", None) or getattr(event, "edited_message", None)
+                        cbq = getattr(event, "callback_query", None)
+                        if msg:
+                            await msg.answer(_BAN_MESSAGE, parse_mode="Markdown")
+                        elif cbq:
+                            await cbq.answer(
+                                "⛔ Your account has been suspended. Contact support.",
+                                show_alert=True,
+                            )
+                        logger.info("banned_user_blocked", telegram_id=from_user.id)
+                        return
+
                     full_name = " ".join(
                         filter(None, [from_user.first_name, from_user.last_name])
                     )
