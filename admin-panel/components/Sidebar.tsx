@@ -11,7 +11,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: "⊞" },
   { href: "/users", label: "Users", icon: "👥" },
-  { href: "/reservations", label: "Reservations", icon: "📅", disabled: true },
+  { href: "/reservations", label: "Reservations", icon: "📅" },
   { href: "/settings", label: "Settings", icon: "⚙️", disabled: true },
 ];
 

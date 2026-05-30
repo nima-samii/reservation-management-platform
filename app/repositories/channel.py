@@ -14,6 +14,11 @@ class ChannelRepository(BaseRepository[Channel]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(Channel, session)
 
+    async def get_all_channels(self) -> list[Channel]:
+        stmt = select(Channel).order_by(Channel.priority.asc(), Channel.name.asc())
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_active_channels_ordered(self) -> list[Channel]:
         stmt = (
             select(Channel)

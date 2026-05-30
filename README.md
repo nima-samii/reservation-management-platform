@@ -143,6 +143,21 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 │   ├── templates/
 │   │   └── schedule_message.j2   # Broadcast message template
 │   └── utils/
+├── admin-panel/                  # Next.js 14 admin panel (TypeScript, Tailwind, React Query)
+│   ├── app/
+│   │   ├── (dashboard)/
+│   │   │   ├── layout.tsx        # Dashboard shell with sidebar
+│   │   │   ├── users/            # User list + detail pages + components
+│   │   │   └── reservations/     # Reservations page + components
+│   │   └── login/                # Login page
+│   ├── components/Sidebar.tsx    # Shared sidebar nav
+│   ├── lib/
+│   │   ├── api.ts                # Axios instance with JWT auto-refresh
+│   │   ├── auth.ts               # Cookie/localStorage token helpers
+│   │   └── api/
+│   │       ├── users.ts          # Typed user API functions
+│   │       └── reservations.ts   # Typed reservation API functions
+│   └── store/auth.ts             # Zustand auth store
 ├── migrations/
 │   └── versions/
 │       ├── 0001_initial_schema.py
@@ -151,7 +166,8 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 │       ├── 0004_reservation_lifecycle_indexes.py
 │       ├── 0005_participation_score.py
 │       ├── 0006_notification_logs.py
-│       └── 0007_broadcast_and_schedule_events.py
+│       ├── 0007_broadcast_and_schedule_events.py
+│       └── 0008_admin_audit_logs.py
 ├── tests/
 │   ├── conftest.py
 │   └── test_services/
@@ -227,6 +243,17 @@ sort_order                     status  ⁴
 is_active                      error_message
                                sent_at
                                UQ: (channel_id, broadcast_date)
+
+admin_audit_logs
+──────────────────────────────
+id (PK)
+action                         — e.g. "user_patched", "score_adjusted", "no_show_applied"
+admin_username
+entity_type                    — "user" | "reservation" | ...
+entity_id
+details                        — human-readable change summary
+ip_address
+created_at
 ```
 
 > ¹ `reservation.status`: `active` · `completed` · `cancelled` · `expired`
@@ -467,20 +494,26 @@ make gen-secret
 | `GET /api/admin/users` | JWT | Paginated user list — search, filter, sort |
 | `GET /api/admin/users/{id}` | JWT | Full user profile + recent 20 score transactions |
 | `PATCH /api/admin/users/{id}` | JWT | Edit name, gender, country, active/ban status |
-| `POST /api/admin/users/{id}/score` | JWT | Admin score adjustment (logged, audit-trailed) |
+| `POST /api/admin/users/{id}/score` | JWT | Admin score adjustment (delta ±1–100, reason required) |
 | `GET /api/admin/users/{id}/score-history` | JWT | Paginated score transaction history |
+| `POST /api/admin/users/{id}/send-message` | JWT | Send Telegram message to user via bot |
 | `GET /api/admin/countries` | JWT | All active countries (for edit dropdowns) |
+| `GET /api/admin/reservations` | JWT | Paginated reservations — date, channel, status, search filters + summary bar |
+| `GET /api/admin/reservations/{id}` | JWT | Full reservation detail |
+| `POST /api/admin/reservations/{id}/no-show` | JWT | Apply no-show penalty (idempotent, score-traced, audit-logged) |
+| `GET /api/admin/reservations/export` | JWT | CSV or JSON export, up to 90-day range |
+| `GET /api/admin/channels` | JWT | All channels (for filter dropdowns) |
 
 ### Implementation phases
 
 | Phase | Status | Scope |
 |---|---|---|
 | 1 — Auth & scaffold | ✅ Done | JWT auth, login page, protected routes, Docker wiring |
-| 2 — User management | ✅ Done | List/search/ban users, inline edit, score adjustment |
-| 3 — Reservations & slots | 🔲 Planned | View/cancel reservations, slot grid |
+| 2 — User management | ✅ Done | List/search/ban users, inline edit, score adjustment, send Telegram message |
+| 3 — Reservations & no-show | ✅ Done | Reservation list with filters, no-show penalty, CSV/JSON export |
 | 4 — Schedule events & stats | 🔲 Planned | Inject Dhikr blocks, dashboard stats |
 
-See [`adminpanel.md`](adminpanel.md) for the full phase tracker.
+See [`adminpanel.md`](adminpanel.md) for the full API reference and phase tracker.
 
 ---
 
