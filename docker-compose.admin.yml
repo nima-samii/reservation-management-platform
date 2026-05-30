@@ -1,0 +1,17 @@
+services:
+  admin-panel:
+    build:
+      context: ./admin-panel
+      dockerfile: Dockerfile
+      args:
+        BACKEND_URL: http://app:8000
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    networks:
+      - bot_network
+
+networks:
+  bot_network:
+    external: true
+    name: 19-step_default

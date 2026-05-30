@@ -377,33 +377,42 @@ Add `CHANNEL_2_*`, `CHANNEL_3_*` etc. to register additional channels. Channels 
 git clone <repo>
 cd 19-step
 cp .env.example .env
-# Edit .env — set BOT_TOKEN, POSTGRES_PASSWORD, and CHANNEL_1_* at minimum
+# Edit .env — set BOT_TOKEN, POSTGRES_PASSWORD, CHANNEL_1_* at minimum
 ```
 
-### 2. Run with Docker (recommended)
+### 2. First-time setup (installs deps, runs migrations, seeds DB)
 
 ```bash
-# Production (webhook mode)
-docker compose up --build
+make setup
+```
 
-# Development (polling mode, hot-reload)
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+### 3. Run with Docker (recommended)
+
+```bash
+make build        # production — webhook mode
+make dev          # development — polling mode + hot-reload
 ```
 
 Docker Compose will:
 
 1. Start PostgreSQL and Redis
-2. Run `alembic upgrade head` (all 7 migrations)
+2. Run `alembic upgrade head` (all migrations)
 3. Run `seed_countries.py`
 4. Start the application with all scheduled jobs active
 
-### 3. Local development (no Docker)
+### 4. Local development (no Docker)
 
 ```bash
-pip install -r requirements.txt
-alembic upgrade head
-python scripts/seed_countries.py
-python main_polling.py
+make install      # pip install -r requirements.txt
+make migrate-local
+make seed-local
+make run          # polling mode
+```
+
+### All available commands
+
+```bash
+make help
 ```
 
 ---
@@ -411,7 +420,9 @@ python main_polling.py
 ## Running Tests
 
 ```bash
-pytest tests/ -v
+make test          # full suite, verbose
+make test-fast     # no verbose output
+make test-cov      # with coverage report
 ```
 
 Test coverage includes:
@@ -422,19 +433,48 @@ Test coverage includes:
 
 ---
 
-## Admin Panel Readiness
+## Admin Panel
 
-The architecture supports clean admin panel addition without touching bot code:
+A web-based admin panel is included in `admin-panel/` (Next.js 14, TypeScript, Tailwind CSS).
 
-- **Services** contain all business logic with no Telegram coupling → reusable from HTTP endpoints
-- **Repositories** are injectable and independently testable
-- **`audit_logs`** tracks all user actions
-- **`score_transactions`** provides an immutable score history per user
-- **`broadcast_logs`** stores `telegram_message_id` for future editable/retryable broadcasts
-- **`schedule_events`** allows admins to inject special schedule blocks without deployment
-- **`users.is_banned`** flag ready for blacklist feature
-- **`participation_score`** ready for leaderboards and gamification
-- FastAPI already running — add `/admin` routers without touching bot code
+### Start admin panel
+
+```bash
+make admin-up      # Docker — port 3000 (requires main stack to be running first)
+make admin-dev     # Local dev server — port 3000
+```
+
+Open `http://localhost:3000` and sign in with the credentials from your `.env`.
+
+### Generate credentials
+
+```bash
+# Bcrypt hash for ADMIN_PASSWORD
+make hash pw=yourpassword
+
+# Random secret for ADMIN_JWT_SECRET
+make gen-secret
+```
+
+### Endpoints
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `POST /api/admin/auth/login` | public | Returns `access_token` + `refresh_token` |
+| `POST /api/admin/auth/refresh` | public | Rotates refresh token (old token invalidated) |
+| `POST /api/admin/auth/logout` | public | Revokes refresh token from Redis |
+| `GET /api/admin/health` | JWT | DB + Redis reachability check |
+
+### Implementation phases
+
+| Phase | Status | Scope |
+|---|---|---|
+| 1 — Auth & scaffold | ✅ Done | JWT auth, login page, protected routes, Docker wiring |
+| 2 — User management | 🔲 Planned | List/ban users, score adjustment |
+| 3 — Reservations & slots | 🔲 Planned | View/cancel reservations, slot grid |
+| 4 — Schedule events & stats | 🔲 Planned | Inject Dhikr blocks, dashboard stats |
+
+See [`adminpanel.md`](adminpanel.md) for the full phase tracker.
 
 ---
 

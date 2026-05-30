@@ -1,3 +1,4 @@
+from app.db.models.admin_audit_log import AdminAuditLog
 from app.db.models.audit_log import AuditLog
 from app.db.models.broadcast_log import BroadcastLog, BroadcastStatus
 from app.db.models.channel import Channel
@@ -10,6 +11,7 @@ from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 
 __all__ = [
+    "AdminAuditLog",
     "AuditLog",
     "BroadcastLog",
     "BroadcastStatus",

@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 
+from app.api.admin import admin_router
 from app.api.routers.health import router as health_router
 from app.api.routers.webhook import create_webhook_router
 from app.bot.main import create_bot, create_dispatcher, setup_webhook
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router)
+    app.include_router(admin_router)
 
     return app
 

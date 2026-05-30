@@ -82,8 +82,15 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
 
-    # ── Admin ─────────────────────────────────────────────────────────────
+    # ── Admin (Telegram) ──────────────────────────────────────────────────
     ADMIN_IDS: str = ""  # comma-separated telegram IDs
+
+    # ── Admin Panel ───────────────────────────────────────────────────────
+    ADMIN_USERNAME: str = "admin"
+    # Store the bcrypt hash of the password here (use: python -c "from passlib.hash import bcrypt; print(bcrypt.hash('yourpassword'))")
+    ADMIN_PASSWORD: str = ""
+    ADMIN_JWT_SECRET: str = ""
+    ADMIN_JWT_EXPIRE_MINUTES: int = 30
 
     @property
     def database_url(self) -> str:
