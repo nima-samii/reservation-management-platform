@@ -98,6 +98,32 @@ class BroadcastService:
         )
         return "sent"
 
+    async def broadcast_for_channel_ids(
+        self, channel_ids: list, today=None
+    ) -> list[dict]:
+        """Run the daily broadcast for specific channels. Used by the admin trigger-daily endpoint."""
+        if today is None:
+            today = datetime.now(TZ).date()
+        results: list[dict] = []
+        for cid in channel_ids:
+            channel = await self._channel_repo.get_by_id(cid)
+            if not channel:
+                results.append(
+                    {"channel_id": str(cid), "channel_name": None, "success": False, "telegram_message_id": None}
+                )
+                continue
+            outcome = await self._broadcast_channel(channel, today)
+            log = await self._broadcast_repo.get_for_channel_and_date(channel.id, today)
+            results.append(
+                {
+                    "channel_id": str(channel.id),
+                    "channel_name": channel.name,
+                    "success": outcome in ("sent", "skipped"),
+                    "telegram_message_id": log.telegram_message_id if log else None,
+                }
+            )
+        return results
+
     async def _pin_and_cleanup(self, channel: Channel, new_msg_id: int, today) -> None:
         previous = await self._broadcast_repo.get_previous_sent(channel.id, today)
 

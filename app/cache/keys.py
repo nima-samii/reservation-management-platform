@@ -55,3 +55,18 @@ class CacheKey:
     @staticmethod
     def daily_broadcast_lock() -> str:
         return "lock:broadcast:daily"
+
+    # Admin dashboard stats cache (TTL 60s)
+    @staticmethod
+    def admin_dashboard_stats() -> str:
+        return "cache:admin:dashboard:stats"
+
+    # Admin settings change history (Redis list, max 100 entries)
+    @staticmethod
+    def admin_settings_history() -> str:
+        return "admin:settings:history"
+
+    # Per-admin manual broadcast rate limit key
+    @staticmethod
+    def admin_broadcast_rate_limit(admin: str) -> str:
+        return f"rl:admin:broadcast:{admin}"

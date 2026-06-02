@@ -1,10 +1,13 @@
 import uuid
 from datetime import date
+from math import ceil
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models.broadcast_log import BroadcastLog, BroadcastStatus
+from app.db.models.channel import Channel
 from app.db.models.schedule_event import ScheduleEvent
 from app.repositories.base import BaseRepository
 
@@ -71,6 +74,52 @@ class BroadcastRepository(BaseRepository[BroadcastLog]):
         return await self.save(entry)
 
 
+    async def admin_list(
+        self,
+        *,
+        broadcast_date: date | None = None,
+        channel_id: uuid.UUID | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[dict], int]:
+        """Return paginated broadcast logs with channel name included."""
+        filters = []
+        if broadcast_date is not None:
+            filters.append(BroadcastLog.broadcast_date == broadcast_date)
+        if channel_id is not None:
+            filters.append(BroadcastLog.channel_id == channel_id)
+
+        count_stmt = select(func.count(BroadcastLog.id))
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+        total = (await self.session.execute(count_stmt)).scalar() or 0
+
+        stmt = (
+            select(BroadcastLog, Channel.name.label("channel_name"))
+            .outerjoin(Channel, BroadcastLog.channel_id == Channel.id)
+            .order_by(BroadcastLog.sent_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        if filters:
+            stmt = stmt.where(*filters)
+        rows = (await self.session.execute(stmt)).all()
+        items = [
+            {
+                "id": str(row.BroadcastLog.id),
+                "channel_id": str(row.BroadcastLog.channel_id) if row.BroadcastLog.channel_id else None,
+                "channel_name": row.channel_name,
+                "broadcast_date": row.BroadcastLog.broadcast_date.isoformat(),
+                "status": row.BroadcastLog.status,
+                "telegram_message_id": row.BroadcastLog.telegram_message_id,
+                "error_message": row.BroadcastLog.error_message,
+                "sent_at": row.BroadcastLog.sent_at.isoformat(),
+            }
+            for row in rows
+        ]
+        return items, total
+
+
 class ScheduleEventRepository(BaseRepository[ScheduleEvent]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(ScheduleEvent, session)
@@ -90,6 +139,28 @@ class ScheduleEventRepository(BaseRepository[ScheduleEvent]):
                 | ScheduleEvent.channel_id.is_(None),
             )
             .order_by(ScheduleEvent.sort_order.asc(), ScheduleEvent.title.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_events_in_range(
+        self,
+        date_from: date,
+        date_to: date,
+        channel_id: uuid.UUID | None = None,
+    ) -> list[ScheduleEvent]:
+        filters = [
+            ScheduleEvent.event_date >= date_from,
+            ScheduleEvent.event_date <= date_to,
+            ScheduleEvent.is_active.is_(True),
+        ]
+        if channel_id is not None:
+            filters.append(ScheduleEvent.channel_id == channel_id)
+        stmt = (
+            select(ScheduleEvent)
+            .where(*filters)
+            .options(selectinload(ScheduleEvent.channel))
+            .order_by(ScheduleEvent.event_date.asc(), ScheduleEvent.sort_order.asc())
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

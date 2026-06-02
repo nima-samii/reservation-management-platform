@@ -146,17 +146,27 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 ├── admin-panel/                  # Next.js 14 admin panel (TypeScript, Tailwind, React Query)
 │   ├── app/
 │   │   ├── (dashboard)/
-│   │   │   ├── layout.tsx        # Dashboard shell with sidebar
-│   │   │   ├── users/            # User list + detail pages + components
-│   │   │   └── reservations/     # Reservations page + components
-│   │   └── login/                # Login page
-│   ├── components/Sidebar.tsx    # Shared sidebar nav
+│   │   │   ├── layout.tsx           # Dashboard shell with sidebar
+│   │   │   ├── users/               # User list + detail pages + components
+│   │   │   ├── reservations/        # Reservations page + components
+│   │   │   ├── settings/page.tsx    # Editable settings (4 sections, override file)
+│   │   │   ├── broadcast/page.tsx   # Manual + daily broadcast, logs
+│   │   │   ├── schedule-events/page.tsx  # Inline-edit schedule events CRUD
+│   │   │   └── jobs/page.tsx        # Scheduler job list + manual trigger
+│   │   ├── dashboard/page.tsx       # Activity chart, fill rates, system status
+│   │   └── login/                   # Login page
+│   ├── components/Sidebar.tsx    # Shared sidebar nav (6 items + broadcast-time badge)
 │   ├── lib/
 │   │   ├── api.ts                # Axios instance with JWT auto-refresh
 │   │   ├── auth.ts               # Cookie/localStorage token helpers
 │   │   └── api/
 │   │       ├── users.ts          # Typed user API functions
-│   │       └── reservations.ts   # Typed reservation API functions
+│   │       ├── reservations.ts   # Typed reservation API functions
+│   │       ├── dashboard.ts      # Stats + activity chart API
+│   │       ├── settings.ts       # Settings read/write/history API
+│   │       ├── broadcast.ts      # Manual broadcast + logs API
+│   │       ├── jobs.ts           # Scheduler job API
+│   │       └── scheduleEvents.ts # Schedule events CRUD API
 │   └── store/auth.ts             # Zustand auth store
 ├── migrations/
 │   └── versions/
@@ -503,6 +513,20 @@ make gen-secret
 | `POST /api/admin/reservations/{id}/no-show` | JWT | Apply no-show penalty (idempotent, score-traced, audit-logged) |
 | `GET /api/admin/reservations/export` | JWT | CSV or JSON export, up to 90-day range |
 | `GET /api/admin/channels` | JWT | All channels (for filter dropdowns) |
+| `GET /api/admin/dashboard/stats` | JWT | Live stats — today's reservations, fill rates, week summary, system health (Redis-cached 60s) |
+| `GET /api/admin/dashboard/activity` | JWT | Daily reservation counts for last N days (1–30), used for activity chart |
+| `GET /api/admin/settings` | JWT | Read all operational settings grouped by category |
+| `PATCH /api/admin/settings` | JWT | Update any operational setting; persists to `data/admin_settings_override.json` |
+| `GET /api/admin/settings/history` | JWT | Last 20 settings changes with old/new values (Redis-backed) |
+| `POST /api/admin/broadcast/manual` | JWT | Send custom message to selected channels (rate-limited 5/10min) |
+| `POST /api/admin/broadcast/trigger-daily` | JWT | Manually run today's scheduled broadcast for selected channels |
+| `GET /api/admin/broadcast/logs` | JWT | Paginated broadcast history with date/channel filter |
+| `GET /api/admin/jobs` | JWT | List all APScheduler jobs with next run time |
+| `POST /api/admin/jobs/{job_id}/trigger` | JWT | Trigger a scheduler job immediately in background |
+| `GET /api/admin/schedule-events` | JWT | List upcoming schedule events (custom broadcast blocks) |
+| `POST /api/admin/schedule-events` | JWT | Create a schedule event (channel-specific or global) |
+| `PATCH /api/admin/schedule-events/{id}` | JWT | Edit title, sort_order, or active status |
+| `DELETE /api/admin/schedule-events/{id}` | JWT | Soft-delete (sets `is_active=false`) |
 
 ### Implementation phases
 
@@ -511,7 +535,7 @@ make gen-secret
 | 1 — Auth & scaffold | ✅ Done | JWT auth, login page, protected routes, Docker wiring |
 | 2 — User management | ✅ Done | List/search/ban users, inline edit, score adjustment, send Telegram message |
 | 3 — Reservations & no-show | ✅ Done | Reservation list with filters, no-show penalty, CSV/JSON export |
-| 4 — Schedule events & stats | 🔲 Planned | Inject Dhikr blocks, dashboard stats |
+| 4 — Dashboard, Settings, Broadcast, Jobs | ✅ Done | Live stats, editable settings, manual/daily broadcast, job triggers, schedule events CRUD |
 
 See [`adminpanel.md`](adminpanel.md) for the full API reference and phase tracker.
 

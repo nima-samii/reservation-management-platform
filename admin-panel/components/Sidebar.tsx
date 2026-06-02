@@ -1,24 +1,39 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/auth";
+import { getJobs } from "@/lib/api/jobs";
 
-const NAV_ITEMS: Array<{
-  href: string;
-  label: string;
-  icon: string;
-  disabled?: boolean;
-}> = [
+const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: "⊞" },
   { href: "/users", label: "Users", icon: "👥" },
   { href: "/reservations", label: "Reservations", icon: "📅" },
-  { href: "/settings", label: "Settings", icon: "⚙️", disabled: true },
+  { href: "/broadcast", label: "Broadcast", icon: "📢" },
+  { href: "/schedule-events", label: "Schedule Events", icon: "🗓" },
+  { href: "/settings", label: "Settings", icon: "⚙️" },
+  { href: "/jobs", label: "Jobs", icon: "⚡" },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const logout = useAuthStore((s) => s.logout);
+
+  const { data: jobs } = useQuery({
+    queryKey: ["admin", "jobs"],
+    queryFn: getJobs,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
+  const broadcastJob = jobs?.find((j) => j.id === "daily_broadcast");
+  const nextBroadcastLabel = broadcastJob?.next_run_time
+    ? new Date(broadcastJob.next_run_time).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
 
   async function handleLogout() {
     const refreshToken =
@@ -47,20 +62,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 px-2 py-4 space-y-0.5">
-        {NAV_ITEMS.map(({ href, label, icon, disabled }) => {
-          if (disabled) {
-            return (
-              <span
-                key={href}
-                className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-gray-600 cursor-not-allowed select-none"
-              >
-                <span className="text-base">{icon}</span>
-                <span>{label}</span>
-                <span className="ml-auto text-xs text-gray-700 font-medium">soon</span>
-              </span>
-            );
-          }
-
+        {NAV_ITEMS.map(({ href, label, icon }) => {
           const isActive = pathname === href || pathname.startsWith(href + "/");
           return (
             <Link
@@ -73,7 +75,12 @@ export function Sidebar() {
               }`}
             >
               <span className="text-base">{icon}</span>
-              <span>{label}</span>
+              <span className="flex-1">{label}</span>
+              {href === "/jobs" && nextBroadcastLabel && (
+                <span className="text-xs text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded">
+                  {nextBroadcastLabel}
+                </span>
+              )}
             </Link>
           );
         })}

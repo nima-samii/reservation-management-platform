@@ -1,8 +1,12 @@
+import json
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SETTINGS_OVERRIDE_PATH = Path("data/admin_settings_override.json")
 
 
 class Settings(BaseSettings):
@@ -132,3 +136,34 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+def load_settings_override() -> None:
+    """Apply admin_settings_override.json on top of env-var settings at startup."""
+    if not SETTINGS_OVERRIDE_PATH.exists():
+        return
+    try:
+        data = json.loads(SETTINGS_OVERRIDE_PATH.read_text(encoding="utf-8"))
+        for key, value in data.items():
+            if hasattr(settings, key):
+                object.__setattr__(settings, key, value)
+    except Exception:
+        pass  # malformed file must never break startup
+
+
+def save_settings_override(updates: dict) -> None:
+    """Merge updates into the override file and apply to the live settings object."""
+    SETTINGS_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict = {}
+    if SETTINGS_OVERRIDE_PATH.exists():
+        try:
+            existing = json.loads(SETTINGS_OVERRIDE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    existing.update(updates)
+    SETTINGS_OVERRIDE_PATH.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    for key, value in updates.items():
+        if hasattr(settings, key):
+            object.__setattr__(settings, key, value)

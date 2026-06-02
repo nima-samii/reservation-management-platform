@@ -9,7 +9,7 @@ from app.api.routers.health import router as health_router
 from app.api.routers.webhook import create_webhook_router
 from app.bot.main import create_bot, create_dispatcher, setup_webhook
 from app.cache.client import redis_client
-from app.core.config import settings
+from app.core.config import load_settings_override, settings
 from app.core.logging import get_logger, setup_logging
 from app.schedulers.setup import create_scheduler
 
@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     setup_logging()
+    load_settings_override()
     logger.info("application_starting", environment=settings.ENVIRONMENT)
 
     # Redis

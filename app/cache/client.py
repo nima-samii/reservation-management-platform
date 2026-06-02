@@ -90,6 +90,15 @@ class RedisClient:
             return False, max(current_ttl, 0)
         return True, 0
 
+    async def lpush(self, key: str, *values: str) -> int:
+        return await self.client.lpush(key, *values)
+
+    async def ltrim(self, key: str, start: int, end: int) -> None:
+        await self.client.ltrim(key, start, end)
+
+    async def lrange(self, key: str, start: int, end: int) -> list[str]:
+        return await self.client.lrange(key, start, end)
+
     async def check_anti_flood(self, key: str, min_interval: float) -> bool:
         """Returns True if action is allowed (enough time has passed)."""
         import time
