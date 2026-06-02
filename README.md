@@ -112,14 +112,17 @@ cp .env.example .env
 # Edit .env — set BOT_TOKEN and POSTGRES_PASSWORD at minimum
 ```
 
-### 2. Run with Docker (recommended)
+### 2. First-time setup (installs deps, runs migrations, seeds DB)
 
 ```bash
-# Production (webhook mode)
-docker compose up --build
+make setup
+```
 
-# Development (polling mode, hot-reload)
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+### 3. Run with Docker (recommended)
+
+```bash
+make build        # production — webhook mode
+make dev          # development — polling mode + hot-reload
 ```
 
 Docker Compose will:
@@ -128,7 +131,7 @@ Docker Compose will:
 3. Run `seed_countries.py`
 4. Start the application
 
-### 3. Local development (no Docker)
+### 4. Local development (no Docker)
 
 ```bash
 # Install dependencies
@@ -236,7 +239,9 @@ The architecture is designed for clean admin panel addition:
 ## Running Tests
 
 ```bash
-pytest tests/ -v
+make test          # full suite, verbose
+make test-fast     # no verbose output
+make test-cov      # with coverage report
 ```
 
 ---

@@ -4,11 +4,12 @@ from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 
+from app.api.admin import admin_router
 from app.api.routers.health import router as health_router
 from app.api.routers.webhook import create_webhook_router
 from app.bot.main import create_bot, create_dispatcher, setup_webhook
 from app.cache.client import redis_client
-from app.core.config import settings
+from app.core.config import load_settings_override, settings
 from app.core.logging import get_logger, setup_logging
 from app.schedulers.setup import create_scheduler
 
@@ -18,6 +19,7 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     setup_logging()
+    load_settings_override()
     logger.info("application_starting", environment=settings.ENVIRONMENT)
 
     # Redis
@@ -32,9 +34,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     scheduler = create_scheduler()
     scheduler.start()
 
-    # Run initial slot generation on startup
+    # Run initial slot generation on startup — force=True clears any stale lock
     from app.schedulers.jobs.slot_generation import generate_upcoming_slots
-    await generate_upcoming_slots()
+    await generate_upcoming_slots(force=True)
 
     # Store references in app state
     app.state.bot = bot
@@ -85,6 +87,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router)
+    app.include_router(admin_router)
 
     return app
 

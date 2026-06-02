@@ -11,3 +11,8 @@ build/
 .venv/
 venv/
 *.log
+
+
+test-phases.txt
+
+adminpanel.md
