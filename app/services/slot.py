@@ -44,6 +44,13 @@ class SlotService:
         while current < end:
             slots.append(current)
             current += delta
+
+        if settings.ENABLE_FINAL_MIDNIGHT_SLOT:
+            fh, fm = self._parse_final_slot_time()
+            final = TZ.localize(datetime(for_date.year, for_date.month, for_date.day, fh, fm, 0))
+            if final not in slots:
+                slots.append(final)
+
         return slots
 
     async def generate_slots_for_date(self, for_date: date) -> int:

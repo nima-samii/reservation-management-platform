@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime
 
@@ -8,6 +9,21 @@ from sqlalchemy.orm import selectinload
 from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.models.slot import ReservationSlot
 from app.repositories.base import BaseRepository
+
+
+def _parse_notes(notes: str | None) -> dict:
+    """Parse notes as JSON dict. Plain-string notes are wrapped to preserve them."""
+    if not notes:
+        return {}
+    try:
+        parsed = json.loads(notes)
+        if isinstance(parsed, dict):
+            return parsed
+        # JSON but not a dict (e.g. a JSON string literal) — wrap it
+        return {"original_notes": notes}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # Plain text from bot — wrap so it isn't lost on merge
+        return {"original_notes": notes}
 
 
 class ReservationRepository(BaseRepository[Reservation]):
@@ -74,6 +90,22 @@ class ReservationRepository(BaseRepository[Reservation]):
                 selectinload(Reservation.slot),
                 selectinload(Reservation.channel),
                 selectinload(Reservation.user),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_reservation_admin_detail(
+        self, reservation_id: uuid.UUID
+    ) -> Reservation | None:
+        """Full eager load including user.country_rel — for admin detail endpoint."""
+        stmt = (
+            select(Reservation)
+            .where(Reservation.id == reservation_id)
+            .options(
+                selectinload(Reservation.slot),
+                selectinload(Reservation.channel),
+                selectinload(Reservation.user).selectinload(User.country_rel),
             )
         )
         result = await self.session.execute(stmt)
