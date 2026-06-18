@@ -33,6 +33,12 @@ class User(Base, UUIDMixin, TimestampMixin):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Set to True when a broadcast/notification send raises TelegramForbiddenError
+    # (user blocked the bot or deleted their account). Such users are excluded
+    # from every future broadcast audience.
+    bot_blocked: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     participation_score: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False, server_default="0"
     )

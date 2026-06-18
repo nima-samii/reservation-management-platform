@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # Delete the previous day's broadcast when publishing today's
     DELETE_PREVIOUS_BROADCAST: bool = False
 
+    # ── User Broadcast ────────────────────────────────────────────────────
+    # Max direct messages per second when broadcasting to users (Telegram's
+    # global limit is ~30/s; stay below it to avoid 429 flood-control).
+    USER_BROADCAST_RATE_LIMIT: int = 20
+
     # ── Logging ───────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"

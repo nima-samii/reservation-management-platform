@@ -77,3 +77,8 @@ class CacheKey:
     @staticmethod
     def admin_broadcast_rate_limit(admin: str) -> str:
         return f"rl:admin:broadcast:{admin}"
+
+    # Per-broadcast lock for the user-broadcast background worker
+    @staticmethod
+    def user_broadcast_lock(broadcast_id: str) -> str:
+        return f"lock:broadcast:user:{broadcast_id}"

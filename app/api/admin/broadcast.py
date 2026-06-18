@@ -10,15 +10,29 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.deps import get_current_admin
+from app.api.admin.schemas.user_broadcast import (
+    AudiencePreviewRequest,
+    AudiencePreviewResponse,
+    PaginatedUserBroadcasts,
+    UserBroadcastCreate,
+    UserBroadcastCreateResponse,
+    UserBroadcastHistoryItem,
+    UserBroadcastProgress,
+)
 from app.cache.client import redis_client
 from app.cache.keys import CacheKey
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.db.models.user_broadcast import UserBroadcast
 from app.db.session import get_db_session
 from app.repositories.broadcast import BroadcastRepository
 from app.repositories.channel import ChannelRepository
 from app.repositories.admin_audit_log import AdminAuditLogRepository
+from app.repositories.user_broadcast import UserBroadcastRepository
+from app.schedulers.jobs.user_broadcast import run_user_broadcast_job
+from app.services.audience import AudienceResolver
 from app.services.broadcast import BroadcastService
+from app.services.user_broadcast import UserBroadcastService
 
 router = APIRouter(tags=["admin-broadcast"])
 logger = get_logger(__name__)
@@ -233,3 +247,130 @@ async def get_broadcast_logs(
         "page": page,
         "pages": max(1, ceil(total / page_size)),
     }
+
+
+# ── User broadcasts ─────────────────────────────────────────────────────────
+
+
+def _progress_percent(b: UserBroadcast) -> int:
+    processed = b.success_count + b.failed_count + b.blocked_count
+    if b.total_recipients <= 0:
+        return 100 if b.status in ("completed", "failed") else 0
+    return min(100, round(processed * 100 / b.total_recipients))
+
+
+@router.post("/users/preview", response_model=AudiencePreviewResponse)
+async def preview_user_audience(
+    body: AudiencePreviewRequest,
+    session: AsyncSession = Depends(get_db_session),
+    _admin: str = Depends(get_current_admin),
+) -> AudiencePreviewResponse:
+    """Return the number of users a broadcast would reach. Uses the exact same
+    resolver the sender uses, so the preview can never drift from delivery."""
+    resolver = AudienceResolver(session)
+    count = await resolver.count(body.audience_type)
+    return AudiencePreviewResponse(count=count)
+
+
+@router.post("/users", response_model=UserBroadcastCreateResponse, status_code=201)
+async def create_user_broadcast(
+    body: UserBroadcastCreate,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    admin: str = Depends(get_current_admin),
+) -> UserBroadcastCreateResponse:
+    await _check_rate_limit(admin)
+
+    bot = request.app.state.bot
+    svc = UserBroadcastService(session, bot)
+    broadcast = await svc.create_broadcast(
+        message=body.message,
+        parse_mode=body.parse_mode,
+        audience_type=body.audience_type,
+        created_by=admin,
+    )
+
+    # Hand off delivery to the background scheduler — never block the request.
+    scheduler = request.app.state.scheduler
+    scheduler.add_job(
+        run_user_broadcast_job,
+        "date",
+        args=[str(broadcast.id)],
+        id=f"user_broadcast:{broadcast.id}",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    audit_repo = AdminAuditLogRepository(session)
+    ip = request.client.host if request.client else None
+    await audit_repo.log(
+        action="user_broadcast_created",
+        admin_username=admin,
+        entity_type="user_broadcast",
+        entity_id=str(broadcast.id),
+        details=f"audience={body.audience_type} recipients={broadcast.total_recipients} parse_mode={body.parse_mode}",
+        ip_address=ip,
+    )
+
+    return UserBroadcastCreateResponse(
+        id=broadcast.id,
+        status=broadcast.status,
+        audience_type=broadcast.audience_type,
+        total_recipients=broadcast.total_recipients,
+    )
+
+
+@router.get("/users", response_model=PaginatedUserBroadcasts)
+async def list_user_broadcasts(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_db_session),
+    _admin: str = Depends(get_current_admin),
+) -> PaginatedUserBroadcasts:
+    repo = UserBroadcastRepository(session)
+    rows, total = await repo.admin_list(page=page, page_size=page_size)
+    return PaginatedUserBroadcasts(
+        items=[
+            UserBroadcastHistoryItem(
+                id=b.id,
+                audience_type=b.audience_type,
+                status=b.status,
+                message=b.message,
+                total_recipients=b.total_recipients,
+                success_count=b.success_count,
+                failed_count=b.failed_count,
+                blocked_count=b.blocked_count,
+                created_at=b.created_at,
+                completed_at=b.completed_at,
+            )
+            for b in rows
+        ],
+        total=total,
+        page=page,
+        pages=max(1, ceil(total / page_size)),
+    )
+
+
+@router.get("/users/{broadcast_id}", response_model=UserBroadcastProgress)
+async def get_user_broadcast(
+    broadcast_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+    _admin: str = Depends(get_current_admin),
+) -> UserBroadcastProgress:
+    repo = UserBroadcastRepository(session)
+    b = await repo.get_by_id(broadcast_id)
+    if b is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broadcast not found")
+    return UserBroadcastProgress(
+        id=b.id,
+        status=b.status,
+        audience_type=b.audience_type,
+        total_recipients=b.total_recipients,
+        success_count=b.success_count,
+        failed_count=b.failed_count,
+        blocked_count=b.blocked_count,
+        progress_percent=_progress_percent(b),
+        created_at=b.created_at,
+        started_at=b.started_at,
+        completed_at=b.completed_at,
+    )

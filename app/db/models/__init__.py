@@ -9,6 +9,13 @@ from app.db.models.schedule_event import ScheduleEvent
 from app.db.models.score import ScoreTransaction, ScoreTransactionType
 from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
+from app.db.models.user_broadcast import (
+    RecipientStatus,
+    UserBroadcast,
+    UserBroadcastAudience,
+    UserBroadcastRecipient,
+    UserBroadcastStatus,
+)
 
 __all__ = [
     "AdminAuditLog",
@@ -26,4 +33,9 @@ __all__ = [
     "ScoreTransactionType",
     "ReservationSlot",
     "User",
+    "UserBroadcast",
+    "UserBroadcastRecipient",
+    "UserBroadcastStatus",
+    "UserBroadcastAudience",
+    "RecipientStatus",
 ]

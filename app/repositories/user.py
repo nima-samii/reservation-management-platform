@@ -37,6 +37,16 @@ class UserRepository(BaseRepository[User]):
             if not await self.first_by(public_user_code=code):
                 return code
 
+    async def mark_bot_blocked(self, user_id: uuid.UUID) -> None:
+        """Flag a user as having blocked the bot so future broadcasts skip them."""
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(bot_blocked=True)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(stmt)
+
     async def apply_score_delta(self, user_id: uuid.UUID, delta: int) -> None:
         """Atomically increment or decrement participation_score without a read-modify-write."""
         stmt = (
