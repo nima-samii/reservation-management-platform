@@ -38,7 +38,7 @@ def service():
     svc = UserBroadcastService.__new__(UserBroadcastService)
     svc._session = AsyncMock()
     svc._bot = AsyncMock()
-    svc._resolver = AsyncMock()
+    svc._segmentation = AsyncMock()
     svc._broadcast_repo = AsyncMock()
     svc._recipient_repo = AsyncMock()
     svc._user_repo = AsyncMock()
@@ -140,8 +140,10 @@ async def test_completed_broadcast_not_rerun(service):
 
 @pytest.mark.asyncio
 async def test_create_broadcast_snapshots_audience(service):
+    from app.services.segmentation import SegmentFilter
+
     recipients = [(uuid.uuid4(), 1), (uuid.uuid4(), 2), (uuid.uuid4(), 3)]
-    service._resolver.fetch_recipients = AsyncMock(return_value=recipients)
+    service._segmentation.fetch_recipients = AsyncMock(return_value=recipients)
     created = _broadcast(total_recipients=3)
     service._broadcast_repo.create = AsyncMock(return_value=created)
     service._recipient_repo.bulk_create = AsyncMock(return_value=3)
@@ -150,6 +152,8 @@ async def test_create_broadcast_snapshots_audience(service):
         message="hi",
         parse_mode="HTML",
         audience_type="all_users",
+        segment_filter=SegmentFilter(),
+        filters_payload=None,
         created_by="admin",
     )
 

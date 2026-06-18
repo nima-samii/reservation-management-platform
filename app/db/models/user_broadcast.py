@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, UUIDMixin
@@ -43,6 +43,9 @@ class UserBroadcast(Base, UUIDMixin):
     message: Mapped[str] = mapped_column(sa.Text, nullable=False)
     parse_mode: Mapped[str] = mapped_column(sa.String(10), nullable=False, server_default="HTML")
     audience_type: Mapped[str] = mapped_column(sa.String(40), nullable=False, index=True)
+    # Declarative SegmentFilter for advanced (audience_type="custom") broadcasts;
+    # NULL for Sprint-1 quick segments. Retained for analytics / future reuse.
+    filters: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(
         sa.String(20), nullable=False, server_default=UserBroadcastStatus.PENDING.value, index=True
     )

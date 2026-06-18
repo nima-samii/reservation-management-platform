@@ -2,40 +2,55 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from app.db.models.user_broadcast import UserBroadcastAudience
+from app.services.segmentation import SegmentFilter
 
 _VALID_AUDIENCES = {a.value for a in UserBroadcastAudience}
 _VALID_PARSE_MODES = {"HTML", "Markdown", "plain"}
 
 
-class AudiencePreviewRequest(BaseModel):
-    audience_type: str
+def _validate_audience(v: Optional[str]) -> Optional[str]:
+    if v is not None and v not in _VALID_AUDIENCES:
+        raise ValueError(f"audience_type must be one of {sorted(_VALID_AUDIENCES)}")
+    return v
 
-    @field_validator("audience_type")
-    @classmethod
-    def validate_audience(cls, v: str) -> str:
-        if v not in _VALID_AUDIENCES:
-            raise ValueError(f"audience_type must be one of {sorted(_VALID_AUDIENCES)}")
-        return v
+
+class AudiencePreviewRequest(BaseModel):
+    """Either a Sprint-1 quick segment (audience_type) or a Sprint-2 advanced
+    segment (filters). Backward compatible: audience_type alone still works."""
+
+    audience_type: Optional[str] = None
+    filters: Optional[SegmentFilter] = None
+
+    @model_validator(mode="after")
+    def _check(self) -> "AudiencePreviewRequest":
+        if self.filters is None and self.audience_type is None:
+            raise ValueError("provide either audience_type or filters")
+        _validate_audience(self.audience_type)
+        return self
 
 
 class AudiencePreviewResponse(BaseModel):
     count: int
+    with_username: int
+    without_username: int
+    avg_score: float
 
 
 class UserBroadcastCreate(BaseModel):
-    audience_type: str
+    audience_type: Optional[str] = None
+    filters: Optional[SegmentFilter] = None
     message: str
     parse_mode: str = "HTML"
 
-    @field_validator("audience_type")
-    @classmethod
-    def validate_audience(cls, v: str) -> str:
-        if v not in _VALID_AUDIENCES:
-            raise ValueError(f"audience_type must be one of {sorted(_VALID_AUDIENCES)}")
-        return v
+    @model_validator(mode="after")
+    def _check_audience(self) -> "UserBroadcastCreate":
+        if self.filters is None and self.audience_type is None:
+            raise ValueError("provide either audience_type or filters")
+        _validate_audience(self.audience_type)
+        return self
 
     @field_validator("message")
     @classmethod

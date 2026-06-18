@@ -82,7 +82,7 @@ export type UserBroadcastStatus =
   | "failed";
 
 export interface UserBroadcastCreateParams {
-  audience_type: UserAudience;
+  audience_type: string;
   message: string;
   parse_mode: "HTML" | "Markdown" | "plain";
 }
@@ -90,14 +90,14 @@ export interface UserBroadcastCreateParams {
 export interface UserBroadcastCreateResult {
   id: string;
   status: UserBroadcastStatus;
-  audience_type: UserAudience;
+  audience_type: string;
   total_recipients: number;
 }
 
 export interface UserBroadcastProgress {
   id: string;
   status: UserBroadcastStatus;
-  audience_type: UserAudience;
+  audience_type: string;
   total_recipients: number;
   success_count: number;
   failed_count: number;
@@ -110,7 +110,7 @@ export interface UserBroadcastProgress {
 
 export interface UserBroadcastHistoryItem {
   id: string;
-  audience_type: UserAudience;
+  audience_type: string;
   status: UserBroadcastStatus;
   message: string;
   total_recipients: number;
@@ -128,24 +128,53 @@ export interface PaginatedUserBroadcasts {
   pages: number;
 }
 
-export const AUDIENCE_LABELS: Record<UserAudience, string> = {
+export const AUDIENCE_LABELS: Record<string, string> = {
   all_users: "All Users",
   active_users: "Active Users",
   users_with_reservations: "Users With Reservations",
+  custom: "Custom Segment",
 };
 
+// ── Sprint 2: advanced segmentation ─────────────────────────────────────────
+
+export type ReservationStatus = "active" | "completed" | "cancelled" | "expired";
+export type Gender = "male" | "female" | "not_say";
+
+export interface SegmentFilter {
+  score?: { min?: number | null; max?: number | null } | null;
+  reservation_statuses?: ReservationStatus[] | null;
+  has_no_show?: boolean | null;
+  has_username?: boolean | null;
+  country_ids?: string[] | null;
+  genders?: Gender[] | null;
+  created_from?: string | null;
+  created_to?: string | null;
+}
+
+export interface AudiencePreview {
+  count: number;
+  with_username: number;
+  without_username: number;
+  avg_score: number;
+}
+
+// A preview/create request is either a quick segment or an advanced filter.
+export type SegmentRequest =
+  | { audience_type: UserAudience }
+  | { filters: SegmentFilter };
+
 export async function previewUserAudience(
-  audience_type: UserAudience
-): Promise<{ count: number }> {
-  const { data } = await api.post<{ count: number }>(
+  req: SegmentRequest
+): Promise<AudiencePreview> {
+  const { data } = await api.post<AudiencePreview>(
     "/admin/broadcast/users/preview",
-    { audience_type }
+    req
   );
   return data;
 }
 
 export async function createUserBroadcast(
-  params: UserBroadcastCreateParams
+  params: { message: string; parse_mode: "HTML" | "Markdown" | "plain" } & SegmentRequest
 ): Promise<UserBroadcastCreateResult> {
   const { data } = await api.post<UserBroadcastCreateResult>(
     "/admin/broadcast/users",

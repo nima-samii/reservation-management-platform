@@ -30,8 +30,12 @@ from app.repositories.channel import ChannelRepository
 from app.repositories.admin_audit_log import AdminAuditLogRepository
 from app.repositories.user_broadcast import UserBroadcastRepository
 from app.schedulers.jobs.user_broadcast import run_user_broadcast_job
-from app.services.audience import AudienceResolver
 from app.services.broadcast import BroadcastService
+from app.services.segmentation import (
+    SegmentFilter,
+    SegmentationService,
+    quick_segment_to_filter,
+)
 from app.services.user_broadcast import UserBroadcastService
 
 router = APIRouter(tags=["admin-broadcast"])
@@ -259,17 +263,30 @@ def _progress_percent(b: UserBroadcast) -> int:
     return min(100, round(processed * 100 / b.total_recipients))
 
 
+def _resolve_segment(
+    audience_type: Optional[str], filters: Optional[SegmentFilter]
+) -> tuple[str, SegmentFilter]:
+    """Turn the request (quick audience_type OR advanced filters) into a
+    (display_label, SegmentFilter) pair. Filters win when both are present."""
+    if filters is not None:
+        return "custom", filters
+    # audience_type guaranteed present + valid by schema validation.
+    return audience_type, quick_segment_to_filter(audience_type)
+
+
 @router.post("/users/preview", response_model=AudiencePreviewResponse)
 async def preview_user_audience(
     body: AudiencePreviewRequest,
     session: AsyncSession = Depends(get_db_session),
     _admin: str = Depends(get_current_admin),
 ) -> AudiencePreviewResponse:
-    """Return the number of users a broadcast would reach. Uses the exact same
-    resolver the sender uses, so the preview can never drift from delivery."""
-    resolver = AudienceResolver(session)
-    count = await resolver.count(body.audience_type)
-    return AudiencePreviewResponse(count=count)
+    """Audience statistics for the resolved segment. Uses the exact same
+    SegmentationService the sender uses, so the preview can never drift from
+    delivery."""
+    _, segment_filter = _resolve_segment(body.audience_type, body.filters)
+    engine = SegmentationService(session)
+    stats = await engine.stats(segment_filter)
+    return AudiencePreviewResponse(**stats)
 
 
 @router.post("/users", response_model=UserBroadcastCreateResponse, status_code=201)
@@ -281,12 +298,19 @@ async def create_user_broadcast(
 ) -> UserBroadcastCreateResponse:
     await _check_rate_limit(admin)
 
+    display_audience, segment_filter = _resolve_segment(body.audience_type, body.filters)
+    filters_payload = (
+        body.filters.model_dump(mode="json", exclude_none=True) if body.filters else None
+    )
+
     bot = request.app.state.bot
     svc = UserBroadcastService(session, bot)
     broadcast = await svc.create_broadcast(
         message=body.message,
         parse_mode=body.parse_mode,
-        audience_type=body.audience_type,
+        audience_type=display_audience,
+        segment_filter=segment_filter,
+        filters_payload=filters_payload,
         created_by=admin,
     )
 
@@ -308,7 +332,7 @@ async def create_user_broadcast(
         admin_username=admin,
         entity_type="user_broadcast",
         entity_id=str(broadcast.id),
-        details=f"audience={body.audience_type} recipients={broadcast.total_recipients} parse_mode={body.parse_mode}",
+        details=f"audience={display_audience} recipients={broadcast.total_recipients} parse_mode={body.parse_mode}",
         ip_address=ip,
     )
 

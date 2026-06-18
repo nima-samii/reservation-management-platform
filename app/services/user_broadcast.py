@@ -20,7 +20,7 @@ from app.repositories.user_broadcast import (
     UserBroadcastRecipientRepository,
     UserBroadcastRepository,
 )
-from app.services.audience import AudienceResolver
+from app.services.segmentation import SegmentFilter, SegmentationService
 
 logger = get_logger(__name__)
 
@@ -29,7 +29,7 @@ class UserBroadcastService:
     def __init__(self, session: AsyncSession, bot: Bot) -> None:
         self._session = session
         self._bot = bot
-        self._resolver = AudienceResolver(session)
+        self._segmentation = SegmentationService(session)
         self._broadcast_repo = UserBroadcastRepository(session)
         self._recipient_repo = UserBroadcastRecipientRepository(session)
         self._user_repo = UserRepository(session)
@@ -42,19 +42,25 @@ class UserBroadcastService:
         message: str,
         parse_mode: str,
         audience_type: str,
+        segment_filter: SegmentFilter,
+        filters_payload: dict | None = None,
         created_by: str,
     ) -> UserBroadcast:
         """Create the broadcast row and snapshot its recipient set.
 
-        Raises ValueError if the audience is unknown. Does NOT send — that
-        happens in run_broadcast() on a background worker.
+        ``audience_type`` is the display label ("custom" for advanced segments);
+        ``segment_filter`` is the resolved filter used to select recipients;
+        ``filters_payload`` is the JSON persisted for analytics/future reuse
+        (NULL for quick segments). Does NOT send — that happens in
+        run_broadcast() on a background worker.
         """
-        recipients = await self._resolver.fetch_recipients(audience_type)
+        recipients = await self._segmentation.fetch_recipients(segment_filter)
 
         broadcast = await self._broadcast_repo.create(
             message=message,
             parse_mode=parse_mode,
             audience_type=audience_type,
+            filters=filters_payload,
             created_by=created_by,
             total_recipients=len(recipients),
         )

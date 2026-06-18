@@ -1,9 +1,10 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import toast from "react-hot-toast";
 import { getChannels } from "@/lib/api/reservations";
+import { getCountries } from "@/lib/api/users";
 import {
   sendManualBroadcast,
   triggerDailyBroadcast,
@@ -17,6 +18,11 @@ import {
   type UserAudience,
   type UserBroadcastStatus,
   type UserBroadcastHistoryItem,
+  type SegmentFilter,
+  type SegmentRequest,
+  type AudiencePreview,
+  type ReservationStatus,
+  type Gender,
 } from "@/lib/api/broadcast";
 
 type Tab = "channels" | "users" | "history";
@@ -513,25 +519,121 @@ function Metric({ label, value, tone = "text-gray-200" }: { label: string; value
 
 // ── Users tab ────────────────────────────────────────────────────────────────
 
+type SegmentMode = "quick" | "advanced";
+type TriState = "any" | "yes" | "no";
+
+const RESERVATION_STATUSES: ReservationStatus[] = ["active", "completed", "cancelled", "expired"];
+const GENDERS: { value: Gender; label: string }[] = [
+  { value: "male", label: "Male" },
+  { value: "female", label: "Female" },
+  { value: "not_say", label: "Not specified" },
+];
+
+function CheckboxGroup<T extends string>({
+  options,
+  selected,
+  onToggle,
+}: {
+  options: { value: T; label: string }[];
+  selected: Set<T>;
+  onToggle: (v: T) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-3">
+      {options.map((o) => (
+        <label key={o.value} className="flex items-center gap-1.5 cursor-pointer text-sm text-gray-300">
+          <input
+            type="checkbox"
+            checked={selected.has(o.value)}
+            onChange={() => onToggle(o.value)}
+            className="accent-indigo-500"
+          />
+          {o.label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function TriStateSelect({ value, onChange }: { value: TriState; onChange: (v: TriState) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as TriState)}
+      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+    >
+      <option value="any">Any</option>
+      <option value="yes">Yes</option>
+      <option value="no">No</option>
+    </select>
+  );
+}
+
 function UsersTab() {
   const queryClient = useQueryClient();
-  const [audience, setAudience] = useState<UserAudience>("all_users");
+  const [mode, setMode] = useState<SegmentMode>("quick");
   const [parseMode, setParseMode] = useState<ParseMode>("HTML");
   const [message, setMessage] = useState("");
-  const [previewCount, setPreviewCount] = useState<number | null>(null);
+  const [preview, setPreview] = useState<AudiencePreview | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [activeBroadcastId, setActiveBroadcastId] = useState<string | null>(null);
 
-  // Reset preview when audience changes — it no longer matches.
-  function changeAudience(a: UserAudience) {
-    setAudience(a);
-    setPreviewCount(null);
+  // Quick segment
+  const [audience, setAudience] = useState<UserAudience>("all_users");
+
+  // Advanced filters
+  const [scoreMin, setScoreMin] = useState("");
+  const [scoreMax, setScoreMax] = useState("");
+  const [resStatuses, setResStatuses] = useState<Set<ReservationStatus>>(new Set());
+  const [hasNoShow, setHasNoShow] = useState<TriState>("any");
+  const [hasUsername, setHasUsername] = useState<TriState>("any");
+  const [countryIds, setCountryIds] = useState<Set<string>>(new Set());
+  const [countrySearch, setCountrySearch] = useState("");
+  const [genders, setGenders] = useState<Set<Gender>>(new Set());
+  const [createdFrom, setCreatedFrom] = useState("");
+  const [createdTo, setCreatedTo] = useState("");
+
+  const { data: countries = [] } = useQuery({
+    queryKey: ["admin", "countries"],
+    queryFn: getCountries,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  function buildFilters(): SegmentFilter {
+    const f: SegmentFilter = {};
+    if (scoreMin !== "" || scoreMax !== "") {
+      f.score = {
+        min: scoreMin === "" ? null : Number(scoreMin),
+        max: scoreMax === "" ? null : Number(scoreMax),
+      };
+    }
+    if (resStatuses.size) f.reservation_statuses = Array.from(resStatuses);
+    if (hasNoShow !== "any") f.has_no_show = hasNoShow === "yes";
+    if (hasUsername !== "any") f.has_username = hasUsername === "yes";
+    if (countryIds.size) f.country_ids = Array.from(countryIds);
+    if (genders.size) f.genders = Array.from(genders);
+    if (createdFrom) f.created_from = new Date(`${createdFrom}T00:00:00`).toISOString();
+    if (createdTo) f.created_to = new Date(`${createdTo}T23:59:59`).toISOString();
+    return f;
   }
 
+  // The current request — quick segment OR advanced filters.
+  const request: SegmentRequest = useMemo(
+    () => (mode === "quick" ? { audience_type: audience } : { filters: buildFilters() }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, audience, scoreMin, scoreMax, resStatuses, hasNoShow, hasUsername, countryIds, genders, createdFrom, createdTo]
+  );
+
+  // Any change to the request invalidates a previously fetched preview.
+  const reqKey = JSON.stringify(request);
+  useEffect(() => {
+    setPreview(null);
+  }, [reqKey]);
+
   const previewMutation = useMutation({
-    mutationFn: () => previewUserAudience(audience),
-    onSuccess: (d) => setPreviewCount(d.count),
-    onError: () => toast.error("Failed to load audience count"),
+    mutationFn: () => previewUserAudience(request),
+    onSuccess: (d) => setPreview(d),
+    onError: () => toast.error("Failed to load audience preview"),
   });
 
   const createMutation = useMutation({
@@ -551,40 +653,167 @@ function UsersTab() {
 
   async function handleSendClick() {
     if (message.trim().length < 1) return toast.error("Message is empty");
-    // Ensure we have a fresh count to show in the confirmation modal.
-    if (previewCount === null) {
-      const d = await previewMutation.mutateAsync();
-      if (d.count === 0) return toast.error("No users match this audience");
+    let p = preview;
+    if (p === null) {
+      p = await previewMutation.mutateAsync();
     }
+    if (p.count === 0) return toast.error("No users match this segment");
     setConfirmOpen(true);
   }
 
   function confirmSend() {
-    createMutation.mutate({
-      audience_type: audience,
-      message: message.trim(),
-      parse_mode: parseMode,
-    });
+    createMutation.mutate({ ...request, message: message.trim(), parse_mode: parseMode });
   }
 
-  const confirmCount = previewCount ?? 0;
+  const confirmCount = preview?.count ?? 0;
+
+  function toggle<T>(set: Set<T>, setter: (s: Set<T>) => void, v: T) {
+    const next = new Set(set);
+    next.has(v) ? next.delete(v) : next.add(v);
+    setter(next);
+  }
 
   return (
     <div className="space-y-5">
+      {/* Mode toggle */}
+      <div className="flex rounded-lg overflow-hidden border border-gray-700 text-sm w-fit">
+        {(["quick", "advanced"] as SegmentMode[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`px-5 py-2 transition-colors ${
+              mode === m ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 hover:text-white"
+            }`}
+          >
+            {m === "quick" ? "Quick segment" : "Advanced segment"}
+          </button>
+        ))}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-4">
-          <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Audience</p>
-            <select
-              value={audience}
-              onChange={(e) => changeAudience(e.target.value as UserAudience)}
-              className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            >
-              {(Object.keys(AUDIENCE_LABELS) as UserAudience[]).map((a) => (
-                <option key={a} value={a}>{AUDIENCE_LABELS[a]}</option>
-              ))}
-            </select>
-          </div>
+          {mode === "quick" ? (
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Audience</p>
+              <select
+                value={audience}
+                onChange={(e) => setAudience(e.target.value as UserAudience)}
+                className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {(["all_users", "active_users", "users_with_reservations"] as UserAudience[]).map((a) => (
+                  <option key={a} value={a}>{AUDIENCE_LABELS[a]}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Score range</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={scoreMin}
+                    onChange={(e) => setScoreMin(e.target.value)}
+                    placeholder="Min"
+                    className="w-24 bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                  <span className="text-gray-600">—</span>
+                  <input
+                    type="number"
+                    value={scoreMax}
+                    onChange={(e) => setScoreMax(e.target.value)}
+                    placeholder="Max"
+                    className="w-24 bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Reservation status</p>
+                <CheckboxGroup
+                  options={RESERVATION_STATUSES.map((s) => ({ value: s, label: s }))}
+                  selected={resStatuses}
+                  onToggle={(v) => toggle(resStatuses, setResStatuses, v)}
+                />
+              </div>
+
+              <div className="flex gap-8">
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">No-show</p>
+                  <TriStateSelect value={hasNoShow} onChange={setHasNoShow} />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Has username</p>
+                  <TriStateSelect value={hasUsername} onChange={setHasUsername} />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Gender</p>
+                <CheckboxGroup
+                  options={GENDERS}
+                  selected={genders}
+                  onToggle={(v) => toggle(genders, setGenders, v)}
+                />
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Country</p>
+                <input
+                  type="text"
+                  value={countrySearch}
+                  onChange={(e) => setCountrySearch(e.target.value)}
+                  placeholder="Search countries…"
+                  className="w-full mb-2 bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <div className="max-h-32 overflow-y-auto border border-gray-700 rounded-md p-2 space-y-1">
+                  {(() => {
+                    const term = countrySearch.trim().toLowerCase();
+                    const filtered = term
+                      ? countries.filter((c) => c.name.toLowerCase().includes(term))
+                      : countries;
+                    if (countries.length === 0)
+                      return <span className="text-xs text-gray-600">No countries</span>;
+                    if (filtered.length === 0)
+                      return <span className="text-xs text-gray-600">No matches</span>;
+                    return filtered.map((c) => (
+                      <label key={c.id} className="flex items-center gap-2 cursor-pointer text-sm text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={countryIds.has(c.id)}
+                          onChange={() => toggle(countryIds, setCountryIds, c.id)}
+                          className="accent-indigo-500"
+                        />
+                        {c.flag_emoji ? `${c.flag_emoji} ` : ""}{c.name}
+                      </label>
+                    ));
+                  })()}
+                </div>
+                {countryIds.size > 0 && (
+                  <p className="mt-1 text-xs text-gray-500">{countryIds.size} selected</p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Created date range</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={createdFrom}
+                    onChange={(e) => setCreatedFrom(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                  <span className="text-gray-600">—</span>
+                  <input
+                    type="date"
+                    value={createdTo}
+                    onChange={(e) => setCreatedTo(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           <div>
             <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Parse mode</p>
@@ -602,7 +831,7 @@ function UsersTab() {
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               maxLength={4096}
-              rows={8}
+              rows={6}
               placeholder="Your message to users…"
               className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-2 resize-y placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
@@ -616,29 +845,40 @@ function UsersTab() {
             >
               {previewMutation.isPending ? "Loading…" : "Preview Audience"}
             </button>
-            {previewCount !== null && (
-              <span className="text-sm text-gray-300">
-                Matching Users: <span className="font-semibold text-white">{previewCount}</span>
-              </span>
-            )}
+            <button
+              onClick={handleSendClick}
+              disabled={createMutation.isPending || previewMutation.isPending}
+              className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+            >
+              Send Broadcast
+            </button>
           </div>
-
-          <button
-            onClick={handleSendClick}
-            disabled={createMutation.isPending || previewMutation.isPending}
-            className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
-          >
-            Send Broadcast
-          </button>
         </div>
 
         <div className="space-y-4">
           <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Preview</p>
-            <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 min-h-[160px] text-sm text-gray-300 whitespace-pre-wrap break-words">
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Audience preview</p>
+            {preview ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Metric label="Matching Users" value={preview.count} />
+                <Metric label="Average Score" value={preview.avg_score} tone="text-indigo-300" />
+                <Metric label="With Username" value={preview.with_username} tone="text-green-400" />
+                <Metric label="Without Username" value={preview.without_username} tone="text-amber-400" />
+              </div>
+            ) : (
+              <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 text-sm text-gray-600">
+                Click “Preview Audience” to see who matches.
+              </div>
+            )}
+          </div>
+
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Message preview</p>
+            <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 min-h-[120px] text-sm text-gray-300 whitespace-pre-wrap break-words">
               {message || <span className="text-gray-600">Preview appears here…</span>}
             </div>
           </div>
+
           {activeBroadcastId && <ProgressPanel broadcastId={activeBroadcastId} />}
         </div>
       </div>

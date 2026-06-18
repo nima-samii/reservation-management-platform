@@ -29,11 +29,13 @@ class UserBroadcastRepository(BaseRepository[UserBroadcast]):
         audience_type: str,
         created_by: str,
         total_recipients: int,
+        filters: dict | None = None,
     ) -> UserBroadcast:
         entry = UserBroadcast(
             message=message,
             parse_mode=parse_mode,
             audience_type=audience_type,
+            filters=filters,
             status=UserBroadcastStatus.PENDING.value,
             total_recipients=total_recipients,
             created_by=created_by,
