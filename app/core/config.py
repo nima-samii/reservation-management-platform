@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -7,6 +8,17 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SETTINGS_OVERRIDE_PATH = Path("data/admin_settings_override.json")
+
+# Highest supported REQUIRED_CHANNEL_N_* suffix.
+MAX_REQUIRED_CHANNELS = 5
+
+
+@dataclass(frozen=True)
+class ChannelConfig:
+    """A mandatory-membership channel: ID for verification, URL for UI buttons."""
+
+    id: int
+    url: str
 
 
 class Settings(BaseSettings):
@@ -86,6 +98,24 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
 
+    # ── Mandatory Channel Membership ──────────────────────────────────────
+    # Each required channel is an ID + URL pair. The ID (negative integer) is
+    # used only for Telegram membership verification; the URL is used only for
+    # the "Join" UI buttons. Empty entries are ignored. If no valid channel IDs
+    # are configured, membership verification is disabled entirely.
+    REQUIRED_CHANNEL_1_ID: Optional[int] = None
+    REQUIRED_CHANNEL_1_URL: Optional[str] = None
+    REQUIRED_CHANNEL_2_ID: Optional[int] = None
+    REQUIRED_CHANNEL_2_URL: Optional[str] = None
+    REQUIRED_CHANNEL_3_ID: Optional[int] = None
+    REQUIRED_CHANNEL_3_URL: Optional[str] = None
+    REQUIRED_CHANNEL_4_ID: Optional[int] = None
+    REQUIRED_CHANNEL_4_URL: Optional[str] = None
+    REQUIRED_CHANNEL_5_ID: Optional[int] = None
+    REQUIRED_CHANNEL_5_URL: Optional[str] = None
+    # How long (seconds) a successful membership check is cached in Redis.
+    MEMBERSHIP_CACHE_TTL: int = 1800
+
     # ── Admin (Telegram) ──────────────────────────────────────────────────
     ADMIN_IDS: str = ""  # comma-separated telegram IDs
 
@@ -121,6 +151,30 @@ class Settings(BaseSettings):
         if not self.ADMIN_IDS:
             return []
         return [int(x.strip()) for x in self.ADMIN_IDS.split(",") if x.strip()]
+
+    @property
+    def required_channels(self) -> list[ChannelConfig]:
+        """Configured mandatory-membership channels (entries without an ID are ignored)."""
+        channels: list[ChannelConfig] = []
+        for i in range(1, MAX_REQUIRED_CHANNELS + 1):
+            channel_id = getattr(self, f"REQUIRED_CHANNEL_{i}_ID")
+            if channel_id is None:
+                continue
+            url = getattr(self, f"REQUIRED_CHANNEL_{i}_URL") or ""
+            channels.append(ChannelConfig(id=int(channel_id), url=url))
+        return channels
+
+    @field_validator(
+        *[f"REQUIRED_CHANNEL_{i}_ID" for i in range(1, MAX_REQUIRED_CHANNELS + 1)],
+        *[f"REQUIRED_CHANNEL_{i}_URL" for i in range(1, MAX_REQUIRED_CHANNELS + 1)],
+        mode="before",
+    )
+    @classmethod
+    def _blank_channel_to_none(cls, v: object) -> object:
+        """Treat empty/whitespace env values as unset so blank entries are ignored."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("CHANNEL_CAPACITY_THRESHOLD")
     @classmethod
