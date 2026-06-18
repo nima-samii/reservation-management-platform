@@ -31,6 +31,13 @@ class CacheKey:
     def user(telegram_id: int) -> str:
         return f"cache:user:{telegram_id}"
 
+    # Mandatory-membership verification result (successful checks only).
+    # `version` is a signature of the configured channel set, so changing the
+    # required channels automatically invalidates every cached result.
+    @staticmethod
+    def membership(user_id: int, version: str) -> str:
+        return f"membership:{version}:{user_id}"
+
     # Slot generation lock (prevents double-run)
     @staticmethod
     def slot_generation_lock() -> str:
