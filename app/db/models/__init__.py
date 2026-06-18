@@ -10,7 +10,11 @@ from app.db.models.score import ScoreTransaction, ScoreTransactionType
 from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 from app.db.models.user_broadcast import (
+    BroadcastRecurringRule,
+    BroadcastTemplate,
+    MediaType,
     RecipientStatus,
+    RecurrenceFrequency,
     UserBroadcast,
     UserBroadcastAudience,
     UserBroadcastRecipient,
@@ -38,4 +42,8 @@ __all__ = [
     "UserBroadcastStatus",
     "UserBroadcastAudience",
     "RecipientStatus",
+    "MediaType",
+    "RecurrenceFrequency",
+    "BroadcastTemplate",
+    "BroadcastRecurringRule",
 ]

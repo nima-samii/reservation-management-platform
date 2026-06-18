@@ -4,14 +4,24 @@ from apscheduler.triggers.cron import CronTrigger
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schedulers.jobs.broadcast import send_daily_schedule_job
+from app.schedulers.jobs.recurring_broadcast import dispatch_recurring_broadcasts_job
 from app.schedulers.jobs.reminders import send_pre_session_reminders_job, send_same_day_reminders_job
 from app.schedulers.jobs.reservation_lifecycle import complete_past_reservations_job
 from app.schedulers.jobs.slot_generation import generate_upcoming_slots
 
 logger = get_logger(__name__)
 
+# Module-level handle so background jobs (e.g. the recurring dispatcher) can
+# enqueue one-off delivery jobs without an app/request reference.
+_scheduler: AsyncIOScheduler | None = None
+
+
+def get_scheduler() -> AsyncIOScheduler | None:
+    return _scheduler
+
 
 def create_scheduler() -> AsyncIOScheduler:
+    global _scheduler
     scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
     # Run at midnight and 6 AM every day to ensure next-14-day slots exist
@@ -64,5 +74,16 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
 
+    # Run every minute — fire due recurring broadcast rules
+    scheduler.add_job(
+        dispatch_recurring_broadcasts_job,
+        trigger=CronTrigger(minute="*", timezone=settings.TIMEZONE),
+        id="recurring_broadcast_dispatch",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    _scheduler = scheduler
     logger.info("scheduler_configured")
     return scheduler

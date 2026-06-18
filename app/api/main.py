@@ -38,6 +38,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.schedulers.jobs.slot_generation import generate_upcoming_slots
     await generate_upcoming_slots(force=True)
 
+    # Re-arm one-off jobs for broadcasts left in 'scheduled' across restarts
+    from app.schedulers.jobs.recurring_broadcast import reconcile_scheduled_broadcasts
+    await reconcile_scheduled_broadcasts()
+
     # Store references in app state
     app.state.bot = bot
     app.state.dp = dp

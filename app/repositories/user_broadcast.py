@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models.user_broadcast import (
+    BroadcastRecurringRule,
+    BroadcastTemplate,
     RecipientStatus,
     UserBroadcast,
     UserBroadcastRecipient,
@@ -28,19 +30,68 @@ class UserBroadcastRepository(BaseRepository[UserBroadcast]):
         parse_mode: str,
         audience_type: str,
         created_by: str,
-        total_recipients: int,
+        total_recipients: int = 0,
         filters: dict | None = None,
+        status: str = UserBroadcastStatus.PENDING.value,
+        media_type: str = "text",
+        media_file_id: str | None = None,
+        scheduled_for: datetime | None = None,
+        template_id: uuid.UUID | None = None,
     ) -> UserBroadcast:
         entry = UserBroadcast(
             message=message,
             parse_mode=parse_mode,
             audience_type=audience_type,
             filters=filters,
-            status=UserBroadcastStatus.PENDING.value,
+            status=status,
             total_recipients=total_recipients,
             created_by=created_by,
+            media_type=media_type,
+            media_file_id=media_file_id,
+            scheduled_for=scheduled_for,
+            template_id=template_id,
         )
         return await self.save(entry)
+
+    async def update_draft(self, broadcast_id: uuid.UUID, **fields) -> None:
+        """Patch editable fields on a draft. Caller must guarantee status=draft."""
+        allowed = {
+            "message", "parse_mode", "audience_type", "filters",
+            "media_type", "media_file_id", "scheduled_for",
+        }
+        values = {k: v for k, v in fields.items() if k in allowed}
+        if not values:
+            return
+        await self.session.execute(
+            update(UserBroadcast).where(UserBroadcast.id == broadcast_id).values(**values)
+        )
+
+    async def set_status(self, broadcast_id: uuid.UUID, status: str) -> None:
+        await self.session.execute(
+            update(UserBroadcast).where(UserBroadcast.id == broadcast_id).values(status=status)
+        )
+
+    async def set_total_recipients(self, broadcast_id: uuid.UUID, total: int) -> None:
+        await self.session.execute(
+            update(UserBroadcast)
+            .where(UserBroadcast.id == broadcast_id)
+            .values(total_recipients=total)
+        )
+
+    async def get_due_scheduled(self, now: datetime) -> list[UserBroadcast]:
+        """Scheduled broadcasts whose time has arrived (restart-safety net)."""
+        stmt = select(UserBroadcast).where(
+            UserBroadcast.status == UserBroadcastStatus.SCHEDULED.value,
+            UserBroadcast.scheduled_for.is_not(None),
+            UserBroadcast.scheduled_for <= now,
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def list_scheduled(self) -> list[UserBroadcast]:
+        stmt = select(UserBroadcast).where(
+            UserBroadcast.status == UserBroadcastStatus.SCHEDULED.value
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
 
     async def mark_processing(self, broadcast_id: uuid.UUID) -> None:
         stmt = (
@@ -175,3 +226,94 @@ class UserBroadcastRecipientRepository(BaseRepository[UserBroadcastRecipient]):
             .values(**values)
         )
         await self.session.execute(stmt)
+
+
+class BroadcastTemplateRepository(BaseRepository[BroadcastTemplate]):
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(BroadcastTemplate, session)
+
+    async def create(
+        self,
+        *,
+        name: str,
+        message: str,
+        parse_mode: str = "HTML",
+        description: str | None = None,
+        media_type: str = "text",
+        media_file_id: str | None = None,
+    ) -> BroadcastTemplate:
+        entry = BroadcastTemplate(
+            name=name,
+            description=description,
+            message=message,
+            parse_mode=parse_mode,
+            media_type=media_type,
+            media_file_id=media_file_id,
+        )
+        return await self.save(entry)
+
+    async def list_all(self) -> list[BroadcastTemplate]:
+        stmt = select(BroadcastTemplate).order_by(BroadcastTemplate.created_at.desc())
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def update(self, template_id: uuid.UUID, **fields) -> BroadcastTemplate | None:
+        allowed = {"name", "description", "message", "parse_mode", "media_type", "media_file_id"}
+        values = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if values:
+            await self.session.execute(
+                update(BroadcastTemplate)
+                .where(BroadcastTemplate.id == template_id)
+                .values(**values)
+            )
+            await self.session.flush()
+        return await self.get_by_id(template_id)
+
+
+class BroadcastRecurringRuleRepository(BaseRepository[BroadcastRecurringRule]):
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(BroadcastRecurringRule, session)
+
+    async def create(
+        self,
+        *,
+        broadcast_id: uuid.UUID,
+        frequency: str,
+        next_run_at: datetime,
+        interval: int = 1,
+        day_of_week: int | None = None,
+        day_of_month: int | None = None,
+    ) -> BroadcastRecurringRule:
+        entry = BroadcastRecurringRule(
+            broadcast_id=broadcast_id,
+            frequency=frequency,
+            interval=interval,
+            day_of_week=day_of_week,
+            day_of_month=day_of_month,
+            next_run_at=next_run_at,
+        )
+        return await self.save(entry)
+
+    async def get_due(self, now: datetime) -> list[BroadcastRecurringRule]:
+        stmt = select(BroadcastRecurringRule).where(
+            BroadcastRecurringRule.is_active.is_(True),
+            BroadcastRecurringRule.next_run_at <= now,
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def list_all(self) -> list[BroadcastRecurringRule]:
+        stmt = select(BroadcastRecurringRule).order_by(BroadcastRecurringRule.created_at.desc())
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def set_next_run(self, rule_id: uuid.UUID, next_run_at: datetime) -> None:
+        await self.session.execute(
+            update(BroadcastRecurringRule)
+            .where(BroadcastRecurringRule.id == rule_id)
+            .values(next_run_at=next_run_at)
+        )
+
+    async def set_active(self, rule_id: uuid.UUID, is_active: bool) -> None:
+        await self.session.execute(
+            update(BroadcastRecurringRule)
+            .where(BroadcastRecurringRule.id == rule_id)
+            .values(is_active=is_active)
+        )

@@ -28,6 +28,12 @@ def _broadcast(**kw) -> SimpleNamespace:
         success_count=0,
         failed_count=0,
         blocked_count=0,
+        media_type="text",
+        media_file_id=None,
+        filters=None,
+        audience_type="all_users",
+        created_by="admin",
+        template_id=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -158,10 +164,91 @@ async def test_create_broadcast_snapshots_audience(service):
     )
 
     assert result is created
-    create_kwargs = service._broadcast_repo.create.await_args.kwargs
-    assert create_kwargs["total_recipients"] == 3
+    # Immediate broadcasts snapshot at creation: recipients persisted + total set.
     service._recipient_repo.bulk_create.assert_awaited_once_with(created.id, recipients)
+    service._broadcast_repo.set_total_recipients.assert_awaited_once_with(created.id, 3)
+    create_kwargs = service._broadcast_repo.create.await_args.kwargs
+    assert create_kwargs["status"] == UserBroadcastStatus.PENDING.value
     service._session.commit.assert_awaited()
+
+
+# ── Media delivery (Sprint 3) ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_photo_delivery(service):
+    bc = _broadcast(total_recipients=2, media_type="photo", media_file_id="FILE123", message="cap")
+    service._broadcast_repo.get_by_id = AsyncMock(return_value=bc)
+    service._recipient_repo.get_pending = AsyncMock(return_value=[_recipient(1), _recipient(2)])
+
+    await service.run_broadcast(bc.id)
+
+    assert service._bot.send_photo.await_count == 2
+    service._bot.send_message.assert_not_awaited()
+    _, kwargs = service._bot.send_photo.await_args
+    assert kwargs["photo"] == "FILE123"
+    assert kwargs["caption"] == "cap"
+
+
+@pytest.mark.asyncio
+async def test_document_delivery(service):
+    bc = _broadcast(total_recipients=1, media_type="document", media_file_id="DOC9", message="")
+    service._broadcast_repo.get_by_id = AsyncMock(return_value=bc)
+    service._recipient_repo.get_pending = AsyncMock(return_value=[_recipient(1)])
+
+    await service.run_broadcast(bc.id)
+
+    service._bot.send_document.assert_awaited_once()
+    _, kwargs = service._bot.send_document.await_args
+    assert kwargs["document"] == "DOC9"
+    assert kwargs["caption"] is None  # empty message → no caption
+
+
+# ── Status transitions (Sprint 3) ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_draft_not_runnable(service):
+    bc = _broadcast(status=UserBroadcastStatus.DRAFT.value)
+    service._broadcast_repo.get_by_id = AsyncMock(return_value=bc)
+
+    await service.run_broadcast(bc.id)
+
+    service._broadcast_repo.mark_processing.assert_not_awaited()
+    service._recipient_repo.get_pending.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_snapshots_then_sends(service):
+    bc = _broadcast(status=UserBroadcastStatus.SCHEDULED.value, total_recipients=0)
+    service._broadcast_repo.get_by_id = AsyncMock(return_value=bc)
+    # snapshot resolves recipients, then they become pending rows
+    service._segmentation.fetch_recipients = AsyncMock(return_value=[(uuid.uuid4(), 1)])
+    service._recipient_repo.get_pending = AsyncMock(return_value=[_recipient(1)])
+
+    await service.run_broadcast(bc.id)
+
+    service._segmentation.fetch_recipients.assert_awaited_once()  # snapshot happened
+    service._recipient_repo.bulk_create.assert_awaited_once()
+    service._broadcast_repo.mark_processing.assert_awaited_once()
+    kwargs = service._broadcast_repo.mark_finished.await_args.kwargs
+    assert kwargs["status"] == UserBroadcastStatus.COMPLETED
+    assert kwargs["success_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_recurring_run_clones_and_snapshots(service):
+    source = _broadcast(status=UserBroadcastStatus.DRAFT.value, message="hi", media_type="photo", media_file_id="F1")
+    created = _broadcast(total_recipients=3)
+    service._broadcast_repo.create = AsyncMock(return_value=created)
+    service._segmentation.fetch_recipients = AsyncMock(return_value=[(uuid.uuid4(), i) for i in range(3)])
+
+    run = await service.create_recurring_run(source)
+
+    assert run is created
+    create_kwargs = service._broadcast_repo.create.await_args.kwargs
+    assert create_kwargs["status"] == UserBroadcastStatus.PENDING.value
+    assert create_kwargs["media_type"] == "photo"
+    assert create_kwargs["media_file_id"] == "F1"
+    service._recipient_repo.bulk_create.assert_awaited_once()
 
 
 # ── Progress percent helper ──────────────────────────────────────────────────

@@ -76,7 +76,9 @@ export type UserAudience =
   | "users_with_reservations";
 
 export type UserBroadcastStatus =
+  | "draft"
   | "pending"
+  | "scheduled"
   | "processing"
   | "completed"
   | "failed";
@@ -113,10 +115,13 @@ export interface UserBroadcastHistoryItem {
   audience_type: string;
   status: UserBroadcastStatus;
   message: string;
+  media_type: "text" | "photo" | "document";
   total_recipients: number;
   success_count: number;
   failed_count: number;
   blocked_count: number;
+  scheduled_for: string | null;
+  template_id: string | null;
   created_at: string;
   completed_at: string | null;
 }
@@ -173,14 +178,139 @@ export async function previewUserAudience(
   return data;
 }
 
+// ── Sprint 3: media / templates / scheduling ────────────────────────────────
+
+export type MediaKind = "text" | "photo" | "document";
+export type ParseMode = "HTML" | "Markdown" | "plain";
+
+export interface RecurrenceSpec {
+  frequency: "daily" | "weekly" | "monthly";
+  interval: number;
+  day_of_week?: number | null;
+  day_of_month?: number | null;
+  time_of_day?: string | null; // "HH:MM" local time
+}
+
+export interface RecurringRule {
+  id: string;
+  broadcast_id: string;
+  frequency: "daily" | "weekly" | "monthly";
+  interval: number;
+  day_of_week: number | null;
+  day_of_month: number | null;
+  time_of_day: string;
+  next_run_at: string;
+  is_active: boolean;
+  message_preview: string;
+  media_type: MediaKind;
+  audience_type: string;
+}
+
+export interface CreateBroadcastParams {
+  message?: string;
+  parse_mode: ParseMode;
+  audience_type?: UserAudience;
+  filters?: SegmentFilter;
+  media_type?: MediaKind;
+  media_file_id?: string | null;
+  template_id?: string;
+  scheduled_for?: string;
+  save_as_draft?: boolean;
+  recurrence?: RecurrenceSpec;
+}
+
+export interface BroadcastTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  message: string;
+  parse_mode: ParseMode;
+  media_type: MediaKind;
+  media_file_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplateInput {
+  name: string;
+  description?: string | null;
+  message: string;
+  parse_mode: ParseMode;
+  media_type: MediaKind;
+  media_file_id?: string | null;
+}
+
 export async function createUserBroadcast(
-  params: { message: string; parse_mode: "HTML" | "Markdown" | "plain" } & SegmentRequest
+  params: CreateBroadcastParams
 ): Promise<UserBroadcastCreateResult> {
   const { data } = await api.post<UserBroadcastCreateResult>(
     "/admin/broadcast/users",
     params
   );
   return data;
+}
+
+export async function updateDraft(
+  id: string,
+  params: Partial<CreateBroadcastParams>
+): Promise<UserBroadcastCreateResult> {
+  const { data } = await api.patch<UserBroadcastCreateResult>(
+    `/admin/broadcast/users/${id}`,
+    params
+  );
+  return data;
+}
+
+export async function sendDraft(id: string): Promise<UserBroadcastCreateResult> {
+  const { data } = await api.post<UserBroadcastCreateResult>(
+    `/admin/broadcast/users/${id}/send`,
+    {}
+  );
+  return data;
+}
+
+export async function uploadMedia(
+  file: File,
+  media_type: "photo" | "document"
+): Promise<{ media_type: MediaKind; media_file_id: string }> {
+  const form = new FormData();
+  form.append("media_type", media_type);
+  form.append("file", file);
+  const { data } = await api.post("/admin/broadcast/media", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function getTemplates(): Promise<BroadcastTemplate[]> {
+  const { data } = await api.get<BroadcastTemplate[]>("/admin/broadcast/templates");
+  return data;
+}
+
+export async function createTemplate(input: TemplateInput): Promise<BroadcastTemplate> {
+  const { data } = await api.post<BroadcastTemplate>("/admin/broadcast/templates", input);
+  return data;
+}
+
+export async function updateTemplate(
+  id: string,
+  input: Partial<TemplateInput>
+): Promise<BroadcastTemplate> {
+  const { data } = await api.put<BroadcastTemplate>(`/admin/broadcast/templates/${id}`, input);
+  return data;
+}
+
+export async function deleteTemplate(id: string): Promise<void> {
+  await api.delete(`/admin/broadcast/templates/${id}`);
+}
+
+export async function getRecurringRules(): Promise<RecurringRule[]> {
+  const { data } = await api.get<RecurringRule[]>("/admin/broadcast/recurring");
+  return data;
+}
+
+export async function deactivateRecurringRule(id: string): Promise<void> {
+  await api.delete(`/admin/broadcast/recurring/${id}`);
 }
 
 export async function getUserBroadcast(

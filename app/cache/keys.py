@@ -82,3 +82,8 @@ class CacheKey:
     @staticmethod
     def user_broadcast_lock(broadcast_id: str) -> str:
         return f"lock:broadcast:user:{broadcast_id}"
+
+    # Recurring-broadcast dispatcher lock (runs every minute)
+    @staticmethod
+    def recurring_broadcast_lock() -> str:
+        return "lock:broadcast:recurring_dispatch"

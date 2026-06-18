@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # Max direct messages per second when broadcasting to users (Telegram's
     # global limit is ~30/s; stay below it to avoid 429 flood-control).
     USER_BROADCAST_RATE_LIMIT: int = 20
+    # Chat the bot uploads media to in order to obtain a reusable Telegram
+    # file_id (no binaries are stored). Falls back to the first ADMIN_IDS entry.
+    MEDIA_STORAGE_CHAT_ID: Optional[int] = None
 
     # ── Logging ───────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"

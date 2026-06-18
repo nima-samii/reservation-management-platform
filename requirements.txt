@@ -39,6 +39,9 @@ aiohttp==3.10.11
 python-jose[cryptography]==3.3.0
 bcrypt==5.0.0
 
+# ── Multipart (file uploads: broadcast media) ─────────────────────────────────
+python-multipart==0.0.20
+
 # ── Dev / Testing ─────────────────────────────────────────────────────────────
 pytest==8.3.3
 pytest-asyncio==0.24.0

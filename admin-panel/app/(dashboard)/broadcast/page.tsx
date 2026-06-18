@@ -13,6 +13,14 @@ import {
   createUserBroadcast,
   getUserBroadcast,
   getUserBroadcasts,
+  uploadMedia,
+  sendDraft,
+  getTemplates,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
+  getRecurringRules,
+  deactivateRecurringRule,
   AUDIENCE_LABELS,
   type BroadcastChannelResult,
   type UserAudience,
@@ -23,9 +31,15 @@ import {
   type AudiencePreview,
   type ReservationStatus,
   type Gender,
+  type MediaKind,
+  type RecurrenceSpec,
+  type CreateBroadcastParams,
+  type BroadcastTemplate,
+  type TemplateInput,
+  type RecurringRule,
 } from "@/lib/api/broadcast";
 
-type Tab = "channels" | "users" | "history";
+type Tab = "channels" | "users" | "templates" | "recurring" | "history";
 type ChannelSubTab = "custom" | "daily";
 type ParseMode = "HTML" | "Markdown" | "plain";
 
@@ -43,7 +57,9 @@ function StatusBadge({ success }: { success: boolean }) {
 
 function BroadcastStatusBadge({ status }: { status: UserBroadcastStatus }) {
   const map: Record<UserBroadcastStatus, string> = {
+    draft: "bg-gray-800 text-gray-400 border border-gray-600",
     pending: "bg-gray-700 text-gray-300",
+    scheduled: "bg-purple-900/60 text-purple-300",
     processing: "bg-blue-900/60 text-blue-300",
     completed: "bg-green-900/60 text-green-400",
     failed: "bg-red-900/60 text-red-400",
@@ -569,14 +585,36 @@ function TriStateSelect({ value, onChange }: { value: TriState; onChange: (v: Tr
   );
 }
 
-function UsersTab() {
+function UsersTab({
+  prefillTemplate,
+  clearPrefill,
+}: {
+  prefillTemplate: BroadcastTemplate | null;
+  clearPrefill: () => void;
+}) {
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<SegmentMode>("quick");
+  const [templateId, setTemplateId] = useState<string | null>(null);
   const [parseMode, setParseMode] = useState<ParseMode>("HTML");
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<AudiencePreview | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [activeBroadcastId, setActiveBroadcastId] = useState<string | null>(null);
+
+  // Media
+  const [mediaType, setMediaType] = useState<MediaKind>("text");
+  const [mediaFileId, setMediaFileId] = useState<string | null>(null);
+  const [mediaName, setMediaName] = useState<string>("");
+  const [uploading, setUploading] = useState(false);
+
+  // Delivery
+  const [deliveryMode, setDeliveryMode] = useState<"now" | "schedule" | "recurring">("now");
+  const [scheduledFor, setScheduledFor] = useState("");
+  const [frequency, setFrequency] = useState<"daily" | "weekly" | "monthly">("daily");
+  const [interval, setIntervalVal] = useState(1);
+  const [dayOfWeek, setDayOfWeek] = useState(0);
+  const [dayOfMonth, setDayOfMonth] = useState(1);
+  const [timeOfDay, setTimeOfDay] = useState("");
 
   // Quick segment
   const [audience, setAudience] = useState<UserAudience>("all_users");
@@ -597,6 +635,42 @@ function UsersTab() {
     queryKey: ["admin", "countries"],
     queryFn: getCountries,
     staleTime: 10 * 60 * 1000,
+  });
+
+  // Prefill from a template chosen in the Templates tab.
+  useEffect(() => {
+    if (prefillTemplate) {
+      setMessage(prefillTemplate.message);
+      setParseMode(prefillTemplate.parse_mode);
+      setMediaType(prefillTemplate.media_type);
+      setMediaFileId(prefillTemplate.media_file_id);
+      setMediaName(prefillTemplate.media_file_id ? "from template" : "");
+      setTemplateId(prefillTemplate.id);
+      toast.success(`Loaded template “${prefillTemplate.name}”`);
+      clearPrefill();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillTemplate]);
+
+  const saveTemplateMut = useMutation({
+    mutationFn: async () => {
+      const name = window.prompt("Template name?");
+      if (!name) throw new Error("cancelled");
+      return createTemplate({
+        name,
+        message: message.trim(),
+        parse_mode: parseMode,
+        media_type: mediaType,
+        media_file_id: mediaType === "text" ? null : mediaFileId,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Saved as template");
+      queryClient.invalidateQueries({ queryKey: ["admin", "templates"] });
+    },
+    onError: (e: any) => {
+      if (e?.message !== "cancelled") toast.error("Failed to save template");
+    },
   });
 
   function buildFilters(): SegmentFilter {
@@ -651,21 +725,84 @@ function UsersTab() {
     },
   });
 
-  async function handleSendClick() {
-    if (message.trim().length < 1) return toast.error("Message is empty");
-    let p = preview;
-    if (p === null) {
-      p = await previewMutation.mutateAsync();
+  function buildCreateParams(): CreateBroadcastParams {
+    const base: CreateBroadcastParams = {
+      parse_mode: parseMode,
+      message: message.trim() || undefined,
+      media_type: mediaType,
+      media_file_id: mediaType === "text" ? null : mediaFileId,
+      ...(templateId ? { template_id: templateId } : {}),
+      ...(mode === "quick" ? { audience_type: audience } : { filters: buildFilters() }),
+    };
+    if (deliveryMode === "schedule" && scheduledFor) {
+      base.scheduled_for = new Date(scheduledFor).toISOString();
     }
-    if (p.count === 0) return toast.error("No users match this segment");
+    if (deliveryMode === "recurring") {
+      const rec: RecurrenceSpec = { frequency, interval };
+      if (frequency === "weekly") rec.day_of_week = dayOfWeek;
+      if (frequency === "monthly") rec.day_of_month = dayOfMonth;
+      if (timeOfDay) rec.time_of_day = timeOfDay;
+      base.recurrence = rec;
+    }
+    return base;
+  }
+
+  function contentValid(): boolean {
+    if (mediaType !== "text" && !mediaFileId) {
+      toast.error("Upload a file first");
+      return false;
+    }
+    if (mediaType === "text" && message.trim().length < 1) {
+      toast.error("Message is empty");
+      return false;
+    }
+    return true;
+  }
+
+  async function handleSendClick() {
+    if (!contentValid()) return;
+    if (deliveryMode === "schedule" && !scheduledFor) return toast.error("Pick a date/time");
+    let p = preview;
+    if (p === null) p = await previewMutation.mutateAsync();
+    if (deliveryMode === "now" && p.count === 0) return toast.error("No users match this segment");
     setConfirmOpen(true);
   }
 
   function confirmSend() {
-    createMutation.mutate({ ...request, message: message.trim(), parse_mode: parseMode });
+    createMutation.mutate(buildCreateParams());
+  }
+
+  const saveDraftMutation = useMutation({
+    mutationFn: () => createUserBroadcast({ ...buildCreateParams(), save_as_draft: true }),
+    onSuccess: () => {
+      toast.success("Draft saved");
+      queryClient.invalidateQueries({ queryKey: ["admin", "user-broadcasts"] });
+    },
+    onError: () => toast.error("Failed to save draft"),
+  });
+
+  async function handleUpload(file: File) {
+    if (mediaType === "text") return;
+    setUploading(true);
+    try {
+      const res = await uploadMedia(file, mediaType);
+      setMediaFileId(res.media_file_id);
+      setMediaName(file.name);
+      toast.success("Media uploaded");
+    } catch {
+      toast.error("Upload failed");
+    } finally {
+      setUploading(false);
+    }
   }
 
   const confirmCount = preview?.count ?? 0;
+  const primaryLabel =
+    deliveryMode === "schedule"
+      ? "Schedule Broadcast"
+      : deliveryMode === "recurring"
+      ? "Create Recurring"
+      : "Send Broadcast";
 
   function toggle<T>(set: Set<T>, setter: (s: Set<T>) => void, v: T) {
     const next = new Set(set);
@@ -837,6 +974,120 @@ function UsersTab() {
             />
           </div>
 
+          {/* Media */}
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Media</p>
+            <div className="flex items-center gap-3">
+              <select
+                value={mediaType}
+                onChange={(e) => {
+                  setMediaType(e.target.value as MediaKind);
+                  setMediaFileId(null);
+                  setMediaName("");
+                }}
+                className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                <option value="text">Text only</option>
+                <option value="photo">Photo</option>
+                <option value="document">Document</option>
+              </select>
+              {mediaType !== "text" && (
+                <label className="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-md cursor-pointer hover:text-white">
+                  {uploading ? "Uploading…" : "Choose file"}
+                  <input
+                    type="file"
+                    accept={mediaType === "photo" ? "image/*" : undefined}
+                    className="hidden"
+                    onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
+                  />
+                </label>
+              )}
+              {mediaFileId && <span className="text-xs text-green-400">✓ {mediaName || "uploaded"}</span>}
+            </div>
+          </div>
+
+          {/* Delivery */}
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Delivery</p>
+            <div className="flex gap-3 mb-2">
+              {(["now", "schedule", "recurring"] as const).map((d) => (
+                <label key={d} className="flex items-center gap-1.5 cursor-pointer text-sm text-gray-300 capitalize">
+                  <input
+                    type="radio"
+                    name="delivery_mode"
+                    checked={deliveryMode === d}
+                    onChange={() => setDeliveryMode(d)}
+                    className="accent-indigo-500"
+                  />
+                  {d === "now" ? "Send now" : d}
+                </label>
+              ))}
+            </div>
+            {deliveryMode === "schedule" && (
+              <input
+                type="datetime-local"
+                value={scheduledFor}
+                onChange={(e) => setScheduledFor(e.target.value)}
+                className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            )}
+            {deliveryMode === "recurring" && (
+              <div className="flex flex-wrap items-center gap-2 text-sm text-gray-300">
+                <span>Every</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={interval}
+                  onChange={(e) => setIntervalVal(Math.max(1, Number(e.target.value)))}
+                  className="w-16 bg-gray-800 border border-gray-700 text-white rounded-md px-2 py-1"
+                />
+                <select
+                  value={frequency}
+                  onChange={(e) => setFrequency(e.target.value as "daily" | "weekly" | "monthly")}
+                  className="bg-gray-800 border border-gray-700 text-white rounded-md px-2 py-1"
+                >
+                  <option value="daily">day(s)</option>
+                  <option value="weekly">week(s)</option>
+                  <option value="monthly">month(s)</option>
+                </select>
+                {frequency === "weekly" && (
+                  <select
+                    value={dayOfWeek}
+                    onChange={(e) => setDayOfWeek(Number(e.target.value))}
+                    className="bg-gray-800 border border-gray-700 text-white rounded-md px-2 py-1"
+                  >
+                    {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d, i) => (
+                      <option key={i} value={i}>{d}</option>
+                    ))}
+                  </select>
+                )}
+                {frequency === "monthly" && (
+                  <>
+                    <span>on day</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={dayOfMonth}
+                      onChange={(e) => setDayOfMonth(Math.min(31, Math.max(1, Number(e.target.value))))}
+                      className="w-16 bg-gray-800 border border-gray-700 text-white rounded-md px-2 py-1"
+                    />
+                  </>
+                )}
+                <span>at</span>
+                <input
+                  type="time"
+                  value={timeOfDay}
+                  onChange={(e) => setTimeOfDay(e.target.value)}
+                  className="bg-gray-800 border border-gray-700 text-white rounded-md px-2 py-1"
+                />
+                <span className="text-xs text-gray-500">
+                  {timeOfDay ? "" : "(defaults to current time)"}
+                </span>
+              </div>
+            )}
+          </div>
+
           <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={() => previewMutation.mutate()}
@@ -846,11 +1097,25 @@ function UsersTab() {
               {previewMutation.isPending ? "Loading…" : "Preview Audience"}
             </button>
             <button
+              onClick={() => saveDraftMutation.mutate()}
+              disabled={saveDraftMutation.isPending}
+              className="px-4 py-2 bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg hover:text-white disabled:opacity-50 transition-colors"
+            >
+              Save Draft
+            </button>
+            <button
+              onClick={() => saveTemplateMut.mutate()}
+              disabled={saveTemplateMut.isPending}
+              className="px-4 py-2 bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg hover:text-white disabled:opacity-50 transition-colors"
+            >
+              Save as Template
+            </button>
+            <button
               onClick={handleSendClick}
               disabled={createMutation.isPending || previewMutation.isPending}
               className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
             >
-              Send Broadcast
+              {primaryLabel}
             </button>
           </div>
         </div>
@@ -915,9 +1180,122 @@ function UsersTab() {
   );
 }
 
+// ── Recurring tab ────────────────────────────────────────────────────────────
+
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function describeRule(r: RecurringRule): string {
+  const every = r.interval > 1 ? `every ${r.interval} ` : "every ";
+  let unit: string;
+  if (r.frequency === "daily") unit = r.interval > 1 ? "days" : "day";
+  else if (r.frequency === "weekly")
+    unit = `${r.interval > 1 ? "weeks" : "week"} on ${WEEKDAYS[r.day_of_week ?? 0]}`;
+  else unit = `${r.interval > 1 ? "months" : "month"} on day ${r.day_of_month ?? 1}`;
+  return `${every}${unit} at ${r.time_of_day}`;
+}
+
+function RecurringTab() {
+  const queryClient = useQueryClient();
+  const { data: rules = [], isLoading } = useQuery({
+    queryKey: ["admin", "recurring-rules"],
+    queryFn: getRecurringRules,
+    refetchInterval: 30_000,
+  });
+
+  const deactivateMut = useMutation({
+    mutationFn: (id: string) => deactivateRecurringRule(id),
+    onSuccess: () => {
+      toast.success("Recurring rule stopped");
+      queryClient.invalidateQueries({ queryKey: ["admin", "recurring-rules"] });
+    },
+    onError: () => toast.error("Failed to stop rule"),
+  });
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
+      <div>
+        <h2 className="text-white font-medium">Recurring broadcasts</h2>
+        <p className="text-xs text-gray-500 mt-1">
+          Each rule fires a fresh broadcast on its schedule. Stopping a rule prevents future runs;
+          past runs remain in History.
+        </p>
+      </div>
+
+      {isLoading ? (
+        <p className="text-gray-500 text-sm">Loading…</p>
+      ) : rules.length === 0 ? (
+        <p className="text-gray-500 text-sm">No recurring rules yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b border-gray-800">
+                <th className="py-2 pr-4 font-medium">Message</th>
+                <th className="py-2 pr-4 font-medium">Audience</th>
+                <th className="py-2 pr-4 font-medium">Schedule</th>
+                <th className="py-2 pr-4 font-medium">Next run</th>
+                <th className="py-2 pr-4 font-medium">Status</th>
+                <th className="py-2 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map((r) => (
+                <tr key={r.id} className="border-b border-gray-800/60 text-gray-300">
+                  <td className="py-2 pr-4 max-w-[16rem]">
+                    <span className="truncate inline-block max-w-full align-middle">
+                      {r.media_type !== "text" && (
+                        <span className="text-indigo-400 mr-1">[{r.media_type}]</span>
+                      )}
+                      {r.message_preview || <span className="text-gray-600">—</span>}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-4 whitespace-nowrap">
+                    {AUDIENCE_LABELS[r.audience_type] ?? r.audience_type}
+                  </td>
+                  <td className="py-2 pr-4 whitespace-nowrap">{describeRule(r)}</td>
+                  <td className="py-2 pr-4 whitespace-nowrap text-gray-400">
+                    {r.is_active ? new Date(r.next_run_at).toLocaleString() : "—"}
+                  </td>
+                  <td className="py-2 pr-4">
+                    <span
+                      className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                        r.is_active
+                          ? "bg-green-900/60 text-green-400"
+                          : "bg-gray-800 text-gray-500"
+                      }`}
+                    >
+                      {r.is_active ? "Active" : "Stopped"}
+                    </span>
+                  </td>
+                  <td className="py-2 text-right">
+                    {r.is_active && (
+                      <button
+                        onClick={() => {
+                          if (confirm("Stop this recurring broadcast? Future runs will not fire.")) {
+                            deactivateMut.mutate(r.id);
+                          }
+                        }}
+                        disabled={deactivateMut.isPending}
+                        className="text-red-400 hover:text-red-300 text-xs disabled:opacity-50"
+                      >
+                        Stop
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── History tab ──────────────────────────────────────────────────────────────
 
 function HistoryTab() {
+  const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<UserBroadcastHistoryItem | null>(null);
 
@@ -925,6 +1303,16 @@ function HistoryTab() {
     queryKey: ["admin", "user-broadcasts", page],
     queryFn: () => getUserBroadcasts({ page, page_size: 50 }),
     refetchInterval: 5000,
+  });
+
+  const sendDraftMut = useMutation({
+    mutationFn: (id: string) => sendDraft(id),
+    onSuccess: () => {
+      toast.success("Draft sent");
+      setSelected(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "user-broadcasts"] });
+    },
+    onError: () => toast.error("Failed to send draft"),
   });
 
   return (
@@ -936,6 +1324,8 @@ function HistoryTab() {
               <th className="px-4 py-2 text-left">Created At</th>
               <th className="px-4 py-2 text-left">Audience</th>
               <th className="px-4 py-2 text-left">Status</th>
+              <th className="px-4 py-2 text-left">Media</th>
+              <th className="px-4 py-2 text-left">Scheduled</th>
               <th className="px-4 py-2 text-right">Recipients</th>
               <th className="px-4 py-2 text-right">Success</th>
               <th className="px-4 py-2 text-right">Failed</th>
@@ -945,7 +1335,7 @@ function HistoryTab() {
           <tbody>
             {(data?.items ?? []).length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-gray-600 text-sm">
+                <td colSpan={9} className="px-4 py-6 text-center text-gray-600 text-sm">
                   No user broadcasts yet
                 </td>
               </tr>
@@ -959,8 +1349,12 @@ function HistoryTab() {
                   <td className="px-4 py-2 text-gray-400 text-xs">
                     {new Date(b.created_at).toLocaleString()}
                   </td>
-                  <td className="px-4 py-2 text-gray-300">{AUDIENCE_LABELS[b.audience_type]}</td>
+                  <td className="px-4 py-2 text-gray-300">{AUDIENCE_LABELS[b.audience_type] ?? b.audience_type}</td>
                   <td className="px-4 py-2"><BroadcastStatusBadge status={b.status} /></td>
+                  <td className="px-4 py-2 text-gray-400 text-xs capitalize">{b.media_type}</td>
+                  <td className="px-4 py-2 text-gray-400 text-xs">
+                    {b.scheduled_for ? new Date(b.scheduled_for).toLocaleString() : "—"}
+                  </td>
                   <td className="px-4 py-2 text-right text-gray-300">{b.total_recipients}</td>
                   <td className="px-4 py-2 text-right text-green-400">{b.success_count}</td>
                   <td className="px-4 py-2 text-right text-red-400">{b.failed_count}</td>
@@ -1006,14 +1400,30 @@ function HistoryTab() {
             </div>
 
             <dl className="space-y-2 text-sm">
-              <Row label="Audience" value={AUDIENCE_LABELS[selected.audience_type]} />
+              <Row label="Audience" value={AUDIENCE_LABELS[selected.audience_type] ?? selected.audience_type} />
               <Row label="Status" value={<BroadcastStatusBadge status={selected.status} />} />
+              <Row label="Media" value={<span className="capitalize">{selected.media_type}</span>} />
+              <Row
+                label="Scheduled"
+                value={selected.scheduled_for ? new Date(selected.scheduled_for).toLocaleString() : "—"}
+              />
+              <Row label="Template used" value={selected.template_id ? "Yes" : "—"} />
               <Row label="Created" value={new Date(selected.created_at).toLocaleString()} />
               <Row
                 label="Completed"
                 value={selected.completed_at ? new Date(selected.completed_at).toLocaleString() : "—"}
               />
             </dl>
+
+            {selected.status === "draft" && (
+              <button
+                onClick={() => sendDraftMut.mutate(selected.id)}
+                disabled={sendDraftMut.isPending}
+                className="w-full px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {sendDraftMut.isPending ? "Sending…" : "Send now"}
+              </button>
+            )}
 
             <div className="grid grid-cols-4 gap-3 text-center">
               <Metric label="Total" value={selected.total_recipients} />
@@ -1048,10 +1458,187 @@ function Row({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+// ── Templates tab ──────────────────────────────────────────────────────────────
+
+function TemplatesTab({ onUse }: { onUse: (t: BroadcastTemplate) => void }) {
+  const queryClient = useQueryClient();
+  const { data: templates = [] } = useQuery({
+    queryKey: ["admin", "templates"],
+    queryFn: getTemplates,
+  });
+
+  const empty: TemplateInput = {
+    name: "",
+    description: "",
+    message: "",
+    parse_mode: "HTML",
+    media_type: "text",
+    media_file_id: null,
+  };
+  const [form, setForm] = useState<TemplateInput>(empty);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [mediaName, setMediaName] = useState("");
+
+  function reset() {
+    setForm(empty);
+    setEditingId(null);
+    setMediaName("");
+  }
+
+  const saveMut = useMutation({
+    mutationFn: () => (editingId ? updateTemplate(editingId, form) : createTemplate(form)),
+    onSuccess: () => {
+      toast.success(editingId ? "Template updated" : "Template created");
+      queryClient.invalidateQueries({ queryKey: ["admin", "templates"] });
+      reset();
+    },
+    onError: () => toast.error("Failed to save template"),
+  });
+
+  const delMut = useMutation({
+    mutationFn: (id: string) => deleteTemplate(id),
+    onSuccess: () => {
+      toast.success("Template deleted");
+      queryClient.invalidateQueries({ queryKey: ["admin", "templates"] });
+    },
+    onError: () => toast.error("Failed to delete template"),
+  });
+
+  async function upload(file: File) {
+    if (form.media_type === "text") return;
+    setUploading(true);
+    try {
+      const r = await uploadMedia(file, form.media_type as "photo" | "document");
+      setForm({ ...form, media_file_id: r.media_file_id });
+      setMediaName(file.name);
+      toast.success("Media uploaded");
+    } catch {
+      toast.error("Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function save() {
+    if (!form.name.trim() || !form.message.trim()) return toast.error("Name and message are required");
+    if (form.media_type !== "text" && !form.media_file_id) return toast.error("Upload a file first");
+    saveMut.mutate();
+  }
+
+  function edit(t: BroadcastTemplate) {
+    setEditingId(t.id);
+    setForm({
+      name: t.name,
+      description: t.description ?? "",
+      message: t.message,
+      parse_mode: t.parse_mode,
+      media_type: t.media_type,
+      media_file_id: t.media_file_id,
+    });
+    setMediaName(t.media_file_id ? "existing media" : "");
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Editor */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
+        <h2 className="text-sm font-medium text-white">{editingId ? "Edit template" : "New template"}</h2>
+        <input
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="Name"
+          className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-2"
+        />
+        <input
+          value={form.description ?? ""}
+          onChange={(e) => setForm({ ...form, description: e.target.value })}
+          placeholder="Description (optional)"
+          className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-2"
+        />
+        <div className="flex gap-3">
+          <ParseModeSelector value={form.parse_mode as ParseMode} onChange={(m) => setForm({ ...form, parse_mode: m })} />
+        </div>
+        <textarea
+          value={form.message}
+          onChange={(e) => setForm({ ...form, message: e.target.value })}
+          rows={5}
+          placeholder="Message…"
+          maxLength={4096}
+          className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-2 resize-y"
+        />
+        <div className="flex items-center gap-3">
+          <select
+            value={form.media_type}
+            onChange={(e) => setForm({ ...form, media_type: e.target.value as MediaKind, media_file_id: null })}
+            className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5"
+          >
+            <option value="text">Text only</option>
+            <option value="photo">Photo</option>
+            <option value="document">Document</option>
+          </select>
+          {form.media_type !== "text" && (
+            <label className="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-md cursor-pointer hover:text-white">
+              {uploading ? "Uploading…" : "Choose file"}
+              <input type="file" className="hidden" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+            </label>
+          )}
+          {form.media_file_id && <span className="text-xs text-green-400">✓ {mediaName}</span>}
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={save}
+            disabled={saveMut.isPending}
+            className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {editingId ? "Update" : "Create"}
+          </button>
+          {editingId && (
+            <button onClick={reset} className="px-4 py-2 bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg hover:text-white">
+              Cancel
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="space-y-3">
+        {templates.length === 0 ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 text-sm text-gray-600">
+            No templates yet.
+          </div>
+        ) : (
+          templates.map((t) => (
+            <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-white">{t.name}</span>
+                <span className="text-xs text-gray-500 capitalize">{t.media_type}</span>
+              </div>
+              {t.description && <p className="text-xs text-gray-500">{t.description}</p>}
+              <p className="text-xs text-gray-400 line-clamp-2 whitespace-pre-wrap">{t.message}</p>
+              <div className="flex gap-3 text-xs">
+                <button onClick={() => onUse(t)} className="text-indigo-400 hover:text-indigo-300">Use in broadcast</button>
+                <button onClick={() => edit(t)} className="text-gray-400 hover:text-white">Edit</button>
+                <button
+                  onClick={() => confirm(`Delete template “${t.name}”?`) && delMut.mutate(t.id)}
+                  className="text-red-400 hover:text-red-300"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function BroadcastPage() {
   const [tab, setTab] = useState<Tab>("channels");
+  const [prefillTemplate, setPrefillTemplate] = useState<BroadcastTemplate | null>(null);
 
   const { data: channels = [] } = useQuery({
     queryKey: ["admin", "channels"],
@@ -1064,8 +1651,15 @@ export default function BroadcastPage() {
   const tabs: { key: Tab; label: string }[] = [
     { key: "channels", label: "Channels" },
     { key: "users", label: "Users" },
+    { key: "templates", label: "Templates" },
+    { key: "recurring", label: "Recurring" },
     { key: "history", label: "History" },
   ];
+
+  function useTemplate(t: BroadcastTemplate) {
+    setPrefillTemplate(t);
+    setTab("users");
+  }
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -1088,9 +1682,14 @@ export default function BroadcastPage() {
       {tab === "channels" && <ChannelsTab channels={activeChannels} />}
       {tab === "users" && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-          <UsersTab />
+          <UsersTab
+            prefillTemplate={prefillTemplate}
+            clearPrefill={() => setPrefillTemplate(null)}
+          />
         </div>
       )}
+      {tab === "templates" && <TemplatesTab onUse={useTemplate} />}
+      {tab === "recurring" && <RecurringTab />}
       {tab === "history" && <HistoryTab />}
     </div>
   );
