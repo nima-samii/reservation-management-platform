@@ -86,6 +86,18 @@ class Settings(BaseSettings):
     # Minutes before session start to send the pre-session reminder
     PRE_SESSION_REMINDER_MINUTES: int = 30
 
+    # ── Score-change notifications ────────────────────────────────────────
+    # Master switch: DM the user whenever their participation score changes.
+    SCORE_CHANGE_NOTIFICATIONS_ENABLED: bool = True
+    # Reservation reward (+1) and cancellation rollback (-1) are high-churn and
+    # often not worth notifying — opt in explicitly.
+    NOTIFY_ON_REWARD: bool = False
+    NOTIFY_ON_CANCEL_ROLLBACK: bool = False
+    # Delay (seconds) before the one-off delivery job runs. Must be > 0 so the
+    # enclosing DB transaction is guaranteed committed before the job reads the
+    # row (delivery happens out-of-band, never inside the score transaction).
+    SCORE_NOTIFY_DELAY_SECONDS: int = 5
+
     # ── Daily Broadcast ───────────────────────────────────────────────────
     # Hour (0-23, local timezone) daily schedule is broadcast to each channel
     DAILY_BROADCAST_HOUR: int = 12

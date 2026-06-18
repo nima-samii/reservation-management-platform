@@ -30,6 +30,7 @@ from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.session import get_db_session
 from app.repositories.admin_audit_log import AdminAuditLogRepository
 from app.repositories.reservation import ReservationRepository, _parse_notes
+from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.score import ParticipationScoreService
 
 router = APIRouter(tags=["admin-reservations"])
@@ -300,6 +301,9 @@ async def mark_no_show(
         user_id=str(res.user_id),
         admin=admin,
     )
+
+    # Out-of-band DM (delayed job runs after this request's commit lands).
+    enqueue_score_notification(tx.id, tx.transaction_type)
 
     return NoShowResponse(
         reservation_id=res.id,

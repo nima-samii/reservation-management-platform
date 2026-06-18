@@ -23,6 +23,7 @@ from app.db.models.reservation import Reservation, ReservationStatus
 from app.repositories.reservation import ReservationRepository
 from app.repositories.slot import SlotRepository
 from app.repositories.user import UserRepository
+from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.score import ParticipationScoreService
 
 logger = get_logger(__name__)
@@ -110,7 +111,8 @@ class ReservationService:
         # context switch → MissingGreenlet at the handler level.
         loaded = await self._res_repo.get_reservation_with_details(reservation.id)
 
-        await self._score_svc.award_reservation_reward(user_id, reservation.id)
+        tx = await self._score_svc.award_reservation_reward(user_id, reservation.id)
+        enqueue_score_notification(tx.id, tx.transaction_type)
 
         logger.info(
             "reservation_created",
@@ -151,7 +153,8 @@ class ReservationService:
         await self._res_repo.save(reservation)
         await self._slot_repo.save(reservation.slot)
 
-        await self._score_svc.rollback_cancellation(user.id, reservation_id)
+        tx = await self._score_svc.rollback_cancellation(user.id, reservation_id)
+        enqueue_score_notification(tx.id, tx.transaction_type)
 
         logger.info(
             "reservation_cancelled",

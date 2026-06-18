@@ -16,6 +16,16 @@ class ScoreTransactionType(str, Enum):
     ADMIN_ADJUSTMENT = "admin_adjustment"
 
 
+class NotifyStatus(str, Enum):
+    """Delivery state of the user-facing score-change notification."""
+
+    PENDING = "pending"
+    SENDING = "sending"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class ScoreTransaction(Base, UUIDMixin):
     """Immutable ledger row — one row per score event, never updated."""
 
@@ -42,6 +52,16 @@ class ScoreTransaction(Base, UUIDMixin):
         server_default=func.now(),
         nullable=False,
         index=True,
+    )
+
+    # ── Score-change notification delivery state ──────────────────────────
+    # notify_status lifecycle: pending → sending → sent | failed | skipped.
+    # notified_at is set on a terminal outcome and guards against double-sends.
+    notify_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="pending", index=True
+    )
+    notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     user: Mapped["User"] = relationship("User", back_populates="score_transactions")  # noqa: F821

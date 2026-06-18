@@ -27,6 +27,7 @@ from app.repositories.admin_audit_log import AdminAuditLogRepository
 from app.repositories.country import CountryRepository
 from app.repositories.score import ScoreTransactionRepository
 from app.repositories.user import UserRepository
+from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.score import ParticipationScoreService
 
 router = APIRouter(tags=["admin-users"])
@@ -231,6 +232,9 @@ async def adjust_score(
         ip_address=ip,
     )
     logger.info("admin_score_adjusted", user_id=str(user_id), delta=body.delta, admin=admin)
+
+    # Out-of-band DM (delayed job runs after this request's commit lands).
+    enqueue_score_notification(tx.id, tx.transaction_type)
 
     return ScoreAdjustResponse(new_score=user.participation_score, transaction_id=tx.id)
 
