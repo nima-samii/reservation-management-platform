@@ -71,8 +71,14 @@ export function ReservationTable({ items, isLoading, queryKey }: Props) {
 
                 return (
                   <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-900/50">
-                    <td className="px-3 py-2.5 font-mono text-gray-200 whitespace-nowrap">
-                      {item.slot.slot_time_local}
+                    <td className="px-3 py-2.5 font-mono whitespace-nowrap">
+                      <Link
+                        href={`/reservations/${item.id}`}
+                        className="text-gray-200 hover:text-indigo-400 transition-colors"
+                        title="View reservation timeline"
+                      >
+                        {item.slot.slot_time_local}
+                      </Link>
                     </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
                       <span className="px-2 py-0.5 rounded bg-indigo-950 text-indigo-400 border border-indigo-900 text-xs">

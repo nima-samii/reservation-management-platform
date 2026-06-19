@@ -38,6 +38,13 @@ export interface ReservationItem {
 
 export type ReservationDetail = ReservationItem;
 
+export interface TimelineEvent {
+  type: string;
+  title: string;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface NoShowResponse {
   reservation_id: string;
   user_id: string;
@@ -107,6 +114,15 @@ export async function getReservations(
 
 export async function getReservation(id: string): Promise<ReservationDetail> {
   const { data } = await api.get<ReservationDetail>(`/admin/reservations/${id}`);
+  return data;
+}
+
+export async function getReservationTimeline(
+  id: string
+): Promise<TimelineEvent[]> {
+  const { data } = await api.get<TimelineEvent[]>(
+    `/admin/reservations/${id}/timeline`
+  );
   return data;
 }
 

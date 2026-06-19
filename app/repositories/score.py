@@ -44,6 +44,20 @@ class ScoreTransactionRepository(BaseRepository[ScoreTransaction]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_for_reservation(
+        self, reservation_id: uuid.UUID
+    ) -> list[ScoreTransaction]:
+        """All score-ledger rows tied to a reservation, oldest first.
+
+        Read-only — used by the reservation timeline builder."""
+        stmt = (
+            select(ScoreTransaction)
+            .where(ScoreTransaction.reservation_id == reservation_id)
+            .order_by(ScoreTransaction.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_with_user(self, tx_id: uuid.UUID) -> ScoreTransaction | None:
         """Load a transaction with its user eagerly loaded (for notification delivery)."""
         stmt = (

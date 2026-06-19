@@ -46,6 +46,7 @@ from app.repositories.reservation import ReservationRepository, _parse_notes
 from app.repositories.slot import SlotRepository
 from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.reservation import ReservationService
+from app.services.reservation_timeline import ReservationTimelineService, TimelineEvent
 from app.services.score import ParticipationScoreService
 
 router = APIRouter(tags=["admin-reservations"])
@@ -337,6 +338,25 @@ async def get_reservation(
     if not res:
         raise _not_found()
     return ReservationDetail(**_to_item(res).model_dump())
+
+
+@router.get("/{reservation_id}/timeline", response_model=list[TimelineEvent])
+async def get_reservation_timeline(
+    reservation_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+    _admin: str = Depends(get_current_admin),
+) -> list[TimelineEvent]:
+    """Read-only chronological timeline for a reservation, oldest first.
+
+    Built on the fly from existing data (reservation, score ledger,
+    notification logs, admin audit logs) — no timeline persistence. Returns an
+    empty array when the reservation has no derivable events beyond creation.
+    """
+    svc = ReservationTimelineService(session)
+    try:
+        return await svc.build(reservation_id)
+    except NotFoundError:
+        raise _not_found()
 
 
 @router.post("/{reservation_id}/cancel", response_model=ReservationDetail)

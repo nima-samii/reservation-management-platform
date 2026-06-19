@@ -32,6 +32,20 @@ class NotificationRepository(BaseRepository[NotificationLog]):
         )
         return await self.save(entry)
 
+    async def get_for_reservation(
+        self, reservation_id: uuid.UUID
+    ) -> list[NotificationLog]:
+        """All notification-delivery rows for a reservation, oldest first.
+
+        Read-only — used by the reservation timeline builder."""
+        stmt = (
+            select(NotificationLog)
+            .where(NotificationLog.reservation_id == reservation_id)
+            .order_by(NotificationLog.sent_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_reservations_for_same_day_reminder(
         self, target_date: date
     ) -> list[Reservation]:
