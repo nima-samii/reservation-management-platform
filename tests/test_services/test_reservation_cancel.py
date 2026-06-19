@@ -1,9 +1,9 @@
 """Tests for ReservationService.admin_cancel_reservation — mocked repos, no DB.
 
-Covers the Sprint 1 admin-cancellation contract:
+Covers the admin-cancellation contract:
   * active reservation is cancelled and its slot released
   * already-cancelled / completed reservations are rejected
-  * NO score penalty/rollback is applied (operational action)
+  * the booking's +1 reward is rolled back (-1)
   * a cancellation DM is enqueued exactly once
 """
 import uuid
@@ -20,6 +20,7 @@ from app.services.reservation import ReservationService
 def _make_reservation(status=ReservationStatus.ACTIVE, is_booked=True):
     return SimpleNamespace(
         id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
         status=status,
         slot=SimpleNamespace(id=uuid.uuid4(), is_booked=is_booked),
         cancelled_by=None,
@@ -44,7 +45,7 @@ async def test_active_reservation_is_cancelled(service):
 
     with patch(
         "app.services.reservation.enqueue_reservation_cancellation_notification"
-    ) as enqueue:
+    ) as enqueue, patch("app.services.reservation.enqueue_score_notification"):
         result = await service.admin_cancel_reservation(
             res.id, actor="admin", reason="duplicate booking"
         )
@@ -62,7 +63,8 @@ async def test_cancellation_releases_slot(service):
     res = _make_reservation(is_booked=True)
     service._res_repo.get_reservation_admin_detail = AsyncMock(return_value=res)
 
-    with patch("app.services.reservation.enqueue_reservation_cancellation_notification"):
+    with patch("app.services.reservation.enqueue_reservation_cancellation_notification"), \
+            patch("app.services.reservation.enqueue_score_notification"):
         await service.admin_cancel_reservation(res.id, actor="admin")
 
     assert res.slot.is_booked is False
@@ -70,15 +72,18 @@ async def test_cancellation_releases_slot(service):
 
 
 @pytest.mark.asyncio
-async def test_no_score_penalty_applied(service):
+async def test_booking_reward_is_rolled_back(service):
     res = _make_reservation()
     service._res_repo.get_reservation_admin_detail = AsyncMock(return_value=res)
 
-    with patch("app.services.reservation.enqueue_reservation_cancellation_notification"):
+    with patch("app.services.reservation.enqueue_reservation_cancellation_notification"), \
+            patch("app.services.reservation.enqueue_score_notification"):
         await service.admin_cancel_reservation(res.id, actor="admin")
 
-    # Admin cancellation is operational — no rollback / penalty / adjustment.
-    service._score_svc.rollback_cancellation.assert_not_called()
+    # The +1 earned at booking is rolled back (-1); no other score side-effects.
+    service._score_svc.rollback_cancellation.assert_awaited_once_with(
+        res.user_id, res.id
+    )
     service._score_svc.apply_no_show_penalty.assert_not_called()
     service._score_svc.apply_admin_adjustment.assert_not_called()
 

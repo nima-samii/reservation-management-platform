@@ -11,6 +11,11 @@ class CancelReservationBody(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=256)
 
 
+class CreateReservationBody(BaseModel):
+    user_id: uuid.UUID
+    slot_id: uuid.UUID
+
+
 class SlotInfo(BaseModel):
     id: uuid.UUID
     slot_datetime: datetime

@@ -9,18 +9,23 @@ afterwards, so it is delivered at most once even if the job runs twice.
 import html
 import uuid
 
+import pytz
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.db.models.reservation import Reservation
 from app.db.models.score import NotifyStatus, ScoreTransactionType
+from app.repositories.reservation import ReservationRepository
 from app.repositories.score import ScoreTransactionRepository
 from app.repositories.user import UserRepository
 from app.services.notification import NotificationService
 
 logger = get_logger(__name__)
+
+TZ = pytz.timezone(settings.TIMEZONE)
 
 # Human-readable fallback when a transaction carries no explicit reason.
 _REASON_FALLBACK: dict[str, str] = {
@@ -37,6 +42,7 @@ class ScoreNotificationService:
     def __init__(self, session: AsyncSession, bot: Bot) -> None:
         self._session = session
         self._tx_repo = ScoreTransactionRepository(session)
+        self._res_repo = ReservationRepository(session)
         self._user_repo = UserRepository(session)
         self._notif = NotificationService(bot)
 
@@ -69,7 +75,21 @@ class ScoreNotificationService:
             return
         await self._session.commit()
 
-        text = self._format(tx.transaction_type, tx.score_delta, tx.reason, user.participation_score)
+        # Include the linked reservation's slot details (date/time/channel) when
+        # the transaction is tied to one — e.g. a no-show penalty.
+        reservation = None
+        if tx.reservation_id is not None:
+            reservation = await self._res_repo.get_reservation_with_details(
+                tx.reservation_id
+            )
+
+        text = self._format(
+            tx.transaction_type,
+            tx.score_delta,
+            tx.reason,
+            user.participation_score,
+            reservation,
+        )
 
         try:
             success, error = await self._notif.send(user.telegram_id, text)
@@ -105,8 +125,19 @@ class ScoreNotificationService:
             )
 
     @staticmethod
-    def _format(transaction_type: str, delta: int, reason: str | None, new_score: int) -> str:
-        """Sign-aware, HTML-safe score-change message."""
+    def _format(
+        transaction_type: str,
+        delta: int,
+        reason: str | None,
+        new_score: int,
+        reservation: Reservation | None = None,
+    ) -> str:
+        """Sign-aware, HTML-safe score-change message.
+
+        When ``reservation`` is provided (the transaction is tied to a slot, e.g.
+        a no-show penalty) its date/time/channel are appended so the user knows
+        exactly which reservation the change refers to.
+        """
         clean_reason = (reason or "").strip() or _REASON_FALLBACK.get(
             transaction_type, "Score updated"
         )
@@ -117,9 +148,22 @@ class ScoreNotificationService:
         else:
             headline = f"⚠️ You lost <b>{abs(delta)}</b> point(s)."
 
-        return (
+        text = (
             f"<b>Score Update</b>\n\n"
             f"{headline}\n"
-            f"Reason: {clean_reason}\n\n"
-            f"Your current score: <b>{new_score}</b>"
+            f"Reason: {clean_reason}\n"
         )
+
+        if reservation is not None and reservation.slot is not None:
+            slot_local = reservation.slot.slot_datetime.astimezone(TZ)
+            channel_name = (
+                html.escape(reservation.channel.name) if reservation.channel else ""
+            )
+            text += (
+                f"\n📅 Date: <b>{slot_local.strftime('%A, %d %B %Y')}</b>\n"
+                f"🕐 Time: <b>{slot_local.strftime('%I:%M %p')}</b>\n"
+                f"📡 Channel: {channel_name}\n"
+            )
+
+        text += f"\nYour current score: <b>{new_score}</b>"
+        return text

@@ -16,7 +16,7 @@ import pytest
 from app.services.reservation_notification import ReservationNotificationService
 
 
-def _make_reservation(bot_blocked=False, telegram_id=12345):
+def _make_reservation(bot_blocked=False, telegram_id=12345, invite_link=None):
     return SimpleNamespace(
         id=uuid.uuid4(),
         user=SimpleNamespace(
@@ -25,7 +25,7 @@ def _make_reservation(bot_blocked=False, telegram_id=12345):
         slot=SimpleNamespace(
             slot_datetime=datetime(2026, 6, 20, 15, 0, tzinfo=timezone.utc),
         ),
-        channel=SimpleNamespace(name="Channel 1"),
+        channel=SimpleNamespace(name="Channel 1", invite_link=invite_link),
     )
 
 
@@ -94,6 +94,43 @@ async def test_missing_reservation_is_noop(svc):
     await svc.deliver_cancellation(uuid.uuid4())
 
     svc._notif.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sends_creation_confirmation(svc):
+    res = _make_reservation(invite_link="https://t.me/+abc")
+    svc._res_repo.get_reservation_with_details = AsyncMock(return_value=res)
+
+    await svc.deliver_creation(res.id)
+
+    svc._notif.send.assert_awaited_once()
+    telegram_id, text = svc._notif.send.await_args.args
+    assert telegram_id == res.user.telegram_id
+    assert "Reservation Confirmed" in text
+    assert "created for you by the support team" in text
+    assert "Channel 1" in text
+    assert "20 June 2026" in text
+    assert "https://t.me/+abc" in text
+
+
+@pytest.mark.asyncio
+async def test_creation_bot_blocked_user_is_skipped(svc):
+    res = _make_reservation(bot_blocked=True)
+    svc._res_repo.get_reservation_with_details = AsyncMock(return_value=res)
+
+    await svc.deliver_creation(res.id)
+
+    svc._notif.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_creation_delivery_failure_does_not_raise(svc):
+    res = _make_reservation()
+    svc._res_repo.get_reservation_with_details = AsyncMock(return_value=res)
+    svc._notif.send = AsyncMock(return_value=(False, "Telegram: chat not found"))
+
+    # Must NOT raise — the reservation has already committed.
+    await svc.deliver_creation(res.id)
 
 
 @pytest.mark.asyncio

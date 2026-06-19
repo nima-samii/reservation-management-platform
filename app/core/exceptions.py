@@ -84,6 +84,13 @@ class NoChannelAvailableError(ReservationError):
         super().__init__("No channels are currently available for reservations.")
 
 
+class UserBannedError(ReservationError):
+    """Raised when a reservation is attempted for a banned user."""
+
+    def __init__(self) -> None:
+        super().__init__("Cannot create a reservation for a banned user.")
+
+
 class RateLimitError(AppError):
     def __init__(self) -> None:
         super().__init__("Too many requests. Please slow down.", "RATE_LIMITED")

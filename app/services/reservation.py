@@ -18,6 +18,7 @@ from app.core.exceptions import (
     ReservationNotCancellableError,
     SameDayCutoffError,
     SlotUnavailableError,
+    UserBannedError,
 )
 from app.core.logging import get_logger
 from app.db.models.reservation import Reservation, ReservationStatus
@@ -26,6 +27,7 @@ from app.repositories.slot import SlotRepository
 from app.repositories.user import UserRepository
 from app.schedulers.jobs.reservation_notification import (
     enqueue_reservation_cancellation_notification,
+    enqueue_reservation_creation_notification,
 )
 from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.score import ParticipationScoreService
@@ -48,6 +50,23 @@ class ReservationService:
     def _now_tz(self) -> datetime:
         return datetime.now(TZ)
 
+    async def _book(self, user_id: uuid.UUID, slot_id: uuid.UUID) -> Reservation:
+        """Slot-locked booking core shared by the user and admin entry points.
+
+        Acquires the per-slot Redis lock, then delegates to ``_perform_booking``
+        which is the single implementation of all booking validation, slot
+        claiming and reservation creation. Neither entry point may bypass this.
+        """
+        lock_key = CacheKey.slot_lock(str(slot_id))
+        lock_acquired = await self._redis.set_nx(lock_key, str(user_id), ttl=SLOT_LOCK_TTL)
+        if not lock_acquired:
+            raise SlotUnavailableError()
+
+        try:
+            return await self._perform_booking(user_id, slot_id)
+        finally:
+            await self._redis.delete(lock_key)
+
     async def book_slot(
         self,
         *,
@@ -57,16 +76,44 @@ class ReservationService:
         user = await self._user_repo.get_by_telegram_id(telegram_id)
         if not user:
             raise NotFoundError("User")
+        return await self._book(user.id, slot_id)
 
-        lock_key = CacheKey.slot_lock(str(slot_id))
-        lock_acquired = await self._redis.set_nx(lock_key, str(user.id), ttl=SLOT_LOCK_TTL)
-        if not lock_acquired:
-            raise SlotUnavailableError()
+    async def admin_create_reservation(
+        self,
+        *,
+        user_id: uuid.UUID,
+        slot_id: uuid.UUID,
+        actor: str,
+    ) -> Reservation:
+        """Book a slot on behalf of an existing user from the admin panel.
 
-        try:
-            return await self._perform_booking(user.id, slot_id)
-        finally:
-            await self._redis.delete(lock_key)
+        Goes through the exact same booking core as user booking (``_book`` →
+        ``_perform_booking``): identical locking, validation (daily limit, max
+        active, double-booking, past-slot, same-day cutoff) and the standard +1
+        score reward. The only admin-specific additions are the up-front
+        existence/ban checks and an out-of-band confirmation DM (the user is not
+        in a chat flow, so unlike user booking there is no inline confirmation).
+        """
+        user = await self._user_repo.get_by_id(user_id)
+        if not user:
+            raise NotFoundError("User")
+        if user.is_banned:
+            raise UserBannedError()
+
+        reservation = await self._book(user.id, slot_id)
+
+        # Deliver the confirmation only after the surrounding transaction
+        # commits (the delayed job runs in its own session); a failed send
+        # never rolls back the booking.
+        enqueue_reservation_creation_notification(reservation.id)
+
+        logger.info(
+            "admin_reservation_created",
+            reservation_id=str(reservation.id),
+            user_id=str(user.id),
+            admin=actor,
+        )
+        return reservation
 
     async def _perform_booking(
         self, user_id: uuid.UUID, slot_id: uuid.UUID
@@ -182,9 +229,9 @@ class ReservationService:
     ) -> Reservation:
         """Cancel a reservation on behalf of an admin.
 
-        Reuses the shared cancellation flow (status flip + slot release) but,
-        unlike the user flow, applies NO score penalty/rollback — an admin
-        cancellation is an operational action, not user behaviour. Records the
+        Reuses the shared cancellation flow (status flip + slot release) and
+        rolls back the booking's +1 reward (-1), so an admin cancellation leaves
+        the user's score as if the reservation had never been made. Records the
         acting admin, reason and timestamp, then enqueues a user-facing DM that
         is delivered out-of-band after this request's transaction commits.
         """
@@ -200,6 +247,15 @@ class ReservationService:
         reservation.cancelled_at = self._now_tz()
         reservation.cancellation_reason = reason
         await self._res_repo.save(reservation)
+
+        # Roll back the +1 earned at booking. The dedicated cancellation DM
+        # below already informs the user, so we deliberately do NOT raise a
+        # second "Score Update" DM here (RESERVATION_CANCELLATION is gated off
+        # by NOTIFY_ON_CANCEL_ROLLBACK; enqueue self-filters accordingly).
+        tx = await self._score_svc.rollback_cancellation(
+            reservation.user_id, reservation.id
+        )
+        enqueue_score_notification(tx.id, tx.transaction_type)
 
         # Deliver the DM only after the surrounding transaction commits (the
         # delayed job runs in its own session); a failed send never rolls back

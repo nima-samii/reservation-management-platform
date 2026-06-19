@@ -6,6 +6,7 @@ import { getReservations, getChannels } from "@/lib/api/reservations";
 import { SummaryBar } from "./components/SummaryBar";
 import { ReservationTable } from "./components/ReservationTable";
 import { ExportModal } from "./components/ExportModal";
+import { CreateReservationModal } from "./components/CreateReservationModal";
 
 function toDateString(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -27,6 +28,7 @@ export default function ReservationsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(1);
   const [showExport, setShowExport] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
 
   // Debounce search 400ms
   const handleSearchChange = useCallback((val: string) => {
@@ -91,12 +93,20 @@ export default function ReservationsPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-white">Reservations</h1>
-        <button
-          onClick={() => setShowExport(true)}
-          className="px-3 py-1.5 text-sm bg-gray-800 text-gray-300 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white transition-colors"
-        >
-          Export ↓
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+          >
+            + Create Reservation
+          </button>
+          <button
+            onClick={() => setShowExport(true)}
+            className="px-3 py-1.5 text-sm bg-gray-800 text-gray-300 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white transition-colors"
+          >
+            Export ↓
+          </button>
+        </div>
       </div>
 
       {/* Toolbar */}
@@ -244,6 +254,7 @@ export default function ReservationsPage() {
       )}
 
       {showExport && <ExportModal onClose={() => setShowExport(false)} />}
+      {showCreate && <CreateReservationModal onClose={() => setShowCreate(false)} />}
     </div>
   );
 }

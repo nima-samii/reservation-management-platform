@@ -134,6 +134,25 @@ export async function getChannels(): Promise<ChannelItem[]> {
   return data;
 }
 
+export async function getAvailableSlots(
+  channelId: string,
+  date: string
+): Promise<SlotInfo[]> {
+  const q = new URLSearchParams({ channel_id: channelId, date });
+  const { data } = await api.get<SlotInfo[]>(
+    `/admin/reservations/available-slots?${q}`
+  );
+  return data;
+}
+
+export async function createReservation(body: {
+  user_id: string;
+  slot_id: string;
+}): Promise<ReservationDetail> {
+  const { data } = await api.post<ReservationDetail>("/admin/reservations", body);
+  return data;
+}
+
 export async function exportReservations(params: ExportParams): Promise<void> {
   const q = new URLSearchParams();
   q.set("date_from", params.date_from);
