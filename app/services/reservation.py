@@ -15,6 +15,7 @@ from app.core.exceptions import (
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
+    ReservationNotCancellableError,
     SameDayCutoffError,
     SlotUnavailableError,
 )
@@ -23,6 +24,9 @@ from app.db.models.reservation import Reservation, ReservationStatus
 from app.repositories.reservation import ReservationRepository
 from app.repositories.slot import SlotRepository
 from app.repositories.user import UserRepository
+from app.schedulers.jobs.reservation_notification import (
+    enqueue_reservation_cancellation_notification,
+)
 from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.score import ParticipationScoreService
 
@@ -147,11 +151,8 @@ class ReservationService:
         if is_same_day_cutoff_passed(slot_local_date, now, settings.SAME_DAY_CANCEL_CUTOFF_HOUR):
             raise CancellationCutoffError(settings.SAME_DAY_CANCEL_CUTOFF_HOUR)
 
-        reservation.status = ReservationStatus.CANCELLED
-        reservation.slot.is_booked = False
-
+        await self._mark_cancelled(reservation)
         await self._res_repo.save(reservation)
-        await self._slot_repo.save(reservation.slot)
 
         tx = await self._score_svc.rollback_cancellation(user.id, reservation_id)
         enqueue_score_notification(tx.id, tx.transaction_type)
@@ -161,6 +162,56 @@ class ReservationService:
             user_id=str(user.id),
             reservation_id=str(reservation_id),
         )
+
+    async def _mark_cancelled(self, reservation: Reservation) -> None:
+        """Flip an ACTIVE reservation to CANCELLED and free its slot.
+
+        Shared by user-initiated and admin-initiated cancellation. The caller is
+        responsible for persisting the reservation row (and any actor metadata)
+        and for any score side-effects.
+        """
+        reservation.status = ReservationStatus.CANCELLED
+        reservation.slot.is_booked = False
+        await self._slot_repo.save(reservation.slot)
+
+    async def admin_cancel_reservation(
+        self,
+        reservation_id: uuid.UUID,
+        actor: str,
+        reason: str | None = None,
+    ) -> Reservation:
+        """Cancel a reservation on behalf of an admin.
+
+        Reuses the shared cancellation flow (status flip + slot release) but,
+        unlike the user flow, applies NO score penalty/rollback — an admin
+        cancellation is an operational action, not user behaviour. Records the
+        acting admin, reason and timestamp, then enqueues a user-facing DM that
+        is delivered out-of-band after this request's transaction commits.
+        """
+        reservation = await self._res_repo.get_reservation_admin_detail(reservation_id)
+        if not reservation:
+            raise NotFoundError("Reservation")
+
+        if reservation.status != ReservationStatus.ACTIVE:
+            raise ReservationNotCancellableError(reservation.status)
+
+        await self._mark_cancelled(reservation)
+        reservation.cancelled_by = actor
+        reservation.cancelled_at = self._now_tz()
+        reservation.cancellation_reason = reason
+        await self._res_repo.save(reservation)
+
+        # Deliver the DM only after the surrounding transaction commits (the
+        # delayed job runs in its own session); a failed send never rolls back
+        # the cancellation.
+        enqueue_reservation_cancellation_notification(reservation.id, reason)
+
+        logger.info(
+            "admin_reservation_cancelled",
+            reservation_id=str(reservation_id),
+            admin=actor,
+        )
+        return reservation
 
     async def get_user_reservations(self, telegram_id: int) -> list[Reservation]:
         user = await self._user_repo.get_by_telegram_id(telegram_id)

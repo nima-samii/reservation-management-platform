@@ -4,7 +4,11 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+
+class CancelReservationBody(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=256)
 
 
 class SlotInfo(BaseModel):

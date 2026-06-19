@@ -3,6 +3,7 @@
 import Link from "next/link";
 import type { ReservationItem } from "@/lib/api/reservations";
 import { NoShowButton } from "./NoShowButton";
+import { CancelButton } from "./CancelButton";
 
 interface Props {
   items: ReservationItem[];
@@ -106,13 +107,16 @@ export function ReservationTable({ items, isLoading, queryKey }: Props) {
                       <NoShowButton reservation={item} queryKey={queryKey} />
                     </td>
                     <td className="px-3 py-2.5">
-                      <Link
-                        href={`/users/${item.user.id}`}
-                        className="text-gray-500 hover:text-indigo-400 transition-colors"
-                        title="View user"
-                      >
-                        👁
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <CancelButton reservation={item} queryKey={queryKey} />
+                        <Link
+                          href={`/users/${item.user.id}`}
+                          className="text-gray-500 hover:text-indigo-400 transition-colors"
+                          title="View user"
+                        >
+                          👁
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 );

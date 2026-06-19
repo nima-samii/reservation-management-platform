@@ -110,6 +110,17 @@ export async function getReservation(id: string): Promise<ReservationDetail> {
   return data;
 }
 
+export async function cancelReservation(
+  id: string,
+  reason?: string
+): Promise<ReservationDetail> {
+  const { data } = await api.post<ReservationDetail>(
+    `/admin/reservations/${id}/cancel`,
+    { reason: reason?.trim() ? reason.trim() : null }
+  );
+  return data;
+}
+
 export async function markNoShow(id: string): Promise<NoShowResponse> {
   const { data } = await api.post<NoShowResponse>(
     `/admin/reservations/${id}/no-show`,

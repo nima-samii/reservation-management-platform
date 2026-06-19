@@ -69,6 +69,16 @@ class CancellationCutoffError(ReservationError):
         )
 
 
+class ReservationNotCancellableError(ReservationError):
+    """Raised when a cancellation is attempted on a non-ACTIVE reservation."""
+
+    def __init__(self, current_status: str) -> None:
+        super().__init__(
+            f"Only active reservations can be cancelled (current status: {current_status})."
+        )
+        self.current_status = current_status
+
+
 class NoChannelAvailableError(ReservationError):
     def __init__(self) -> None:
         super().__init__("No channels are currently available for reservations.")

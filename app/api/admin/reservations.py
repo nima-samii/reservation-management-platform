@@ -14,6 +14,7 @@ from starlette.requests import Request
 
 from app.api.admin.deps import get_current_admin
 from app.api.admin.schemas.reservations import (
+    CancelReservationBody,
     DaySummary,
     NoShowResponse,
     PaginatedReservations,
@@ -24,13 +25,16 @@ from app.api.admin.schemas.reservations import (
     UserInfo,
     CountryInfo,
 )
+from app.cache.client import redis_client
 from app.core.config import settings
+from app.core.exceptions import NotFoundError, ReservationNotCancellableError
 from app.core.logging import get_logger
 from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.session import get_db_session
 from app.repositories.admin_audit_log import AdminAuditLogRepository
 from app.repositories.reservation import ReservationRepository, _parse_notes
 from app.schedulers.jobs.score_notification import enqueue_score_notification
+from app.services.reservation import ReservationService
 from app.services.score import ParticipationScoreService
 
 router = APIRouter(tags=["admin-reservations"])
@@ -241,6 +245,50 @@ async def get_reservation(
     if not res:
         raise _not_found()
     return ReservationDetail(**_to_item(res).model_dump())
+
+
+@router.post("/{reservation_id}/cancel", response_model=ReservationDetail)
+async def cancel_reservation(
+    reservation_id: uuid.UUID,
+    body: CancelReservationBody,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    admin: str = Depends(get_current_admin),
+) -> ReservationDetail:
+    """Admin-cancel an ACTIVE reservation, audit the action, and notify the user.
+
+    No score penalty is applied (operational action). The user DM is sent
+    out-of-band after this request commits and cannot roll the cancellation back.
+    """
+    svc = ReservationService(session, redis_client)
+    try:
+        res = await svc.admin_cancel_reservation(
+            reservation_id, actor=admin, reason=body.reason
+        )
+    except NotFoundError:
+        raise _not_found()
+    except ReservationNotCancellableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
+
+    audit_repo = AdminAuditLogRepository(session)
+    ip = request.client.host if request.client else None
+    await audit_repo.log(
+        action="reservation_cancelled_by_admin",
+        admin_username=admin,
+        entity_type="reservation",
+        entity_id=str(reservation_id),
+        details=f"reason={body.reason!r}",
+        ip_address=ip,
+    )
+    logger.info(
+        "admin_reservation_cancelled",
+        reservation_id=str(reservation_id),
+        admin=admin,
+    )
+
+    # Re-load with country eager-loaded so the detail response serializes cleanly.
+    detail = await ReservationRepository(session).get_reservation_admin_detail(reservation_id)
+    return ReservationDetail(**_to_item(detail or res).model_dump())
 
 
 @router.post("/{reservation_id}/no-show", response_model=NoShowResponse)

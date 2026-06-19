@@ -187,6 +187,7 @@ class Settings(BaseSettings):
     @field_validator(
         *[f"REQUIRED_CHANNEL_{i}_ID" for i in range(1, MAX_REQUIRED_CHANNELS + 1)],
         *[f"REQUIRED_CHANNEL_{i}_URL" for i in range(1, MAX_REQUIRED_CHANNELS + 1)],
+        "MEDIA_STORAGE_CHAT_ID",
         mode="before",
     )
     @classmethod

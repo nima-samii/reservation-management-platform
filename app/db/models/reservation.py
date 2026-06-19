@@ -1,7 +1,8 @@
 import uuid
+from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import ForeignKey, Index, String, text
+from sqlalchemy import DateTime, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,6 +53,14 @@ class Reservation(Base, UUIDMixin, TimestampMixin):
         index=True,
     )
     notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # Set when an admin cancels the reservation from the admin panel (Sprint 1).
+    # User-initiated cancellations leave these NULL.
+    cancelled_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     user: Mapped["User"] = relationship("User", back_populates="reservations")  # noqa: F821
     slot: Mapped["ReservationSlot"] = relationship(  # noqa: F821
