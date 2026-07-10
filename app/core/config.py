@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     # row (delivery happens out-of-band, never inside the score transaction).
     SCORE_NOTIFY_DELAY_SECONDS: int = 5
 
+    # ── Inactivity Reminder ────────────────────────────────────────────────
+    # Master switch: DM users whose last reservation predates the threshold.
+    INACTIVITY_REMINDER_ENABLED: bool = True
+    # Days without a new reservation after which a reminder is due. Repeats
+    # every this many days until the user reserves again.
+    INACTIVITY_REMINDER_THRESHOLD_DAYS: int = 30
+    # Hour (0-23, local timezone) the daily inactivity scan runs.
+    INACTIVITY_REMINDER_HOUR: int = 18
+
     # ── Daily Broadcast ───────────────────────────────────────────────────
     # Hour (0-23, local timezone) daily schedule is broadcast to each channel
     DAILY_BROADCAST_HOUR: int = 12

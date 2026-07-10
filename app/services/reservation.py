@@ -156,6 +156,10 @@ class ReservationService:
             channel_id=slot.channel_id,  # channel is encoded in the slot itself
         )
 
+        # Reset the inactivity-reminder cycle — any successful booking (user
+        # or admin-initiated) refreshes this; cancellation deliberately does not.
+        await self._user_repo.set_last_reservation_at(user_id, now)
+
         # Re-fetch with selectinload so slot/channel are eagerly loaded.
         # Direct attribute assignment (reservation.slot = slot) is not reliable
         # in async SQLAlchemy — the ORM event system can still trigger a greenlet

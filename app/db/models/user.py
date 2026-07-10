@@ -1,7 +1,8 @@
 import uuid
+from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,6 +42,15 @@ class User(Base, UUIDMixin, TimestampMixin):
     )
     participation_score: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False, server_default="0"
+    )
+    # Refreshed to now() on every successful reservation create (never on
+    # cancellation) — the reset anchor for the inactivity-reminder cycle.
+    last_reservation_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    # Last time an inactivity reminder was delivered to this user.
+    last_inactivity_reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     country_rel: Mapped["Country"] = relationship("Country", back_populates="users")  # noqa: F821

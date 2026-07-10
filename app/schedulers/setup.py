@@ -4,6 +4,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schedulers.jobs.broadcast import send_daily_schedule_job
+from app.schedulers.jobs.inactivity_reminder import send_inactivity_reminders_job
 from app.schedulers.jobs.recurring_broadcast import dispatch_recurring_broadcasts_job
 from app.schedulers.jobs.reminders import send_pre_session_reminders_job, send_same_day_reminders_job
 from app.schedulers.jobs.reservation_lifecycle import complete_past_reservations_job
@@ -79,6 +80,16 @@ def create_scheduler() -> AsyncIOScheduler:
         dispatch_recurring_broadcasts_job,
         trigger=CronTrigger(minute="*", timezone=settings.TIMEZONE),
         id="recurring_broadcast_dispatch",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Run at the configured hour — DM users overdue for a reservation reminder
+    scheduler.add_job(
+        send_inactivity_reminders_job,
+        trigger=CronTrigger(hour=settings.INACTIVITY_REMINDER_HOUR, minute=0, timezone=settings.TIMEZONE),
+        id="inactivity_reminders",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

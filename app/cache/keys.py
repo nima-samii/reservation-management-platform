@@ -87,3 +87,9 @@ class CacheKey:
     @staticmethod
     def recurring_broadcast_lock() -> str:
         return "lock:broadcast:recurring_dispatch"
+
+    # Inactivity-reminder scan lock (runs once daily; generous TTL since the
+    # scan can page through the whole users table with a throttled send loop)
+    @staticmethod
+    def inactivity_reminder_lock() -> str:
+        return "lock:reminder:inactivity"
