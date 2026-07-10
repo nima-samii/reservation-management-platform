@@ -14,6 +14,8 @@ _ALLOWED_JOBS = {
     "same_day_reminders",
     "pre_session_reminders",
     "daily_broadcast",
+    "recurring_broadcast_dispatch",
+    "inactivity_reminders",
 }
 
 
@@ -33,6 +35,12 @@ async def _import_and_run(job_id: str) -> None:
     elif job_id == "daily_broadcast":
         from app.schedulers.jobs.broadcast import send_daily_schedule_job
         await send_daily_schedule_job()
+    elif job_id == "recurring_broadcast_dispatch":
+        from app.schedulers.jobs.recurring_broadcast import dispatch_recurring_broadcasts_job
+        await dispatch_recurring_broadcasts_job()
+    elif job_id == "inactivity_reminders":
+        from app.schedulers.jobs.inactivity_reminder import send_inactivity_reminders_job
+        await send_inactivity_reminders_job()
 
 
 @router.get("")
