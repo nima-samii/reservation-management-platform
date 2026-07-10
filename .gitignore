@@ -16,3 +16,12 @@ venv/
 test-phases.txt
 
 adminpanel.md
+
+data/
+
+# admin-panel (Next.js)
+admin-panel/node_modules/
+admin-panel/.next/
+admin-panel/out/
+admin-panel/*.tsbuildinfo
+admin-panel/next-env.d.ts

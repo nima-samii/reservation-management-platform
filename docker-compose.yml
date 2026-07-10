@@ -153,6 +153,9 @@ services:
       REQUIRED_CHANNEL_5_ID: ${REQUIRED_CHANNEL_5_ID:-}
       REQUIRED_CHANNEL_5_URL: ${REQUIRED_CHANNEL_5_URL:-}
       MEMBERSHIP_CACHE_TTL: ${MEMBERSHIP_CACHE_TTL:-1800}
+    volumes:
+      # Persists data/admin_settings_override.json across container recreation.
+      - ./data:/app/data
     ports:
       - "8000:8000"
     depends_on:

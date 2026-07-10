@@ -1,38 +1,31 @@
 import { api } from "@/lib/api";
 
-export interface ReservationRules {
-  max_active_reservations: number;
-  max_reservation_days_ahead: number;
-  channel_capacity_threshold: number;
-  same_day_cutoff_hour: number;
-  same_day_cancel_cutoff_hour: number;
+export type RestartBehavior = "live" | "cache_refresh" | "scheduler_restart" | "restart_required";
+export type FieldType = "bool" | "int" | "float" | "str";
+
+export interface SettingFieldMeta {
+  key: string;
+  label: string;
+  description: string;
+  type: FieldType;
+  example: unknown;
+  min: number | null;
+  max: number | null;
+  placeholder: string | null;
+  restart_behavior: RestartBehavior;
+  runtime_safe: boolean;
 }
 
-export interface SlotSchedule {
-  slot_start_hour: number;
-  slot_end_hour: number;
-  slot_duration_minutes: number;
-  enable_final_midnight_slot: boolean;
-  final_slot_time: string;
+export interface SettingCategoryMeta {
+  key: string;
+  label: string;
+  fields: SettingFieldMeta[];
 }
 
-export interface Notifications {
-  same_day_reminder_hour: number;
-  pre_session_reminder_minutes: number;
-}
+export type SettingsMetadata = SettingCategoryMeta[];
 
-export interface BroadcastSettings {
-  daily_broadcast_hour: number;
-  enable_broadcast_auto_pin: boolean;
-  delete_previous_broadcast: boolean;
-}
-
-export interface AllSettings {
-  reservation_rules: ReservationRules;
-  slot_schedule: SlotSchedule;
-  notifications: Notifications;
-  broadcast: BroadcastSettings;
-}
+// category -> { field_key: value }
+export type SettingsValues = Record<string, Record<string, string | number | boolean | null>>;
 
 export interface SettingsHistoryEntry {
   changed_at: string;
@@ -42,17 +35,41 @@ export interface SettingsHistoryEntry {
   changed_by: string;
 }
 
-export async function getSettings(): Promise<AllSettings> {
-  const { data } = await api.get<AllSettings>("/admin/settings");
+export interface MembershipChannel {
+  id: number;
+  url: string;
+}
+
+export async function getSettingsMetadata(): Promise<SettingsMetadata> {
+  const { data } = await api.get<SettingsMetadata>("/admin/settings/metadata");
   return data;
 }
 
-export async function patchSettings(partial: Partial<AllSettings>): Promise<AllSettings> {
-  const { data } = await api.patch<AllSettings>("/admin/settings", partial);
+export async function getSettings(): Promise<SettingsValues> {
+  const { data } = await api.get<SettingsValues>("/admin/settings");
+  return data;
+}
+
+export async function patchSettings(partial: SettingsValues): Promise<SettingsValues> {
+  const { data } = await api.patch<SettingsValues>("/admin/settings", partial);
   return data;
 }
 
 export async function getSettingsHistory(): Promise<SettingsHistoryEntry[]> {
   const { data } = await api.get<SettingsHistoryEntry[]>("/admin/settings/history");
+  return data;
+}
+
+export async function getMembershipChannels(): Promise<MembershipChannel[]> {
+  const { data } = await api.get<MembershipChannel[]>("/admin/settings/membership-channels");
+  return data;
+}
+
+export async function putMembershipChannels(
+  channels: MembershipChannel[]
+): Promise<MembershipChannel[]> {
+  const { data } = await api.put<MembershipChannel[]>("/admin/settings/membership-channels", {
+    channels,
+  });
   return data;
 }

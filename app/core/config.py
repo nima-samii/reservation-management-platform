@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -7,6 +9,10 @@ from typing import Optional
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Persisted via a host bind mount (see docker-compose.yml `app` service's
+# `./data:/app/data` volume) rather than a database table — a single JSON file
+# is enough for one admin-editable settings blob and avoids adding a DB
+# dependency the spec calls "unnecessary infrastructure" for this use case.
 SETTINGS_OVERRIDE_PATH = Path("data/admin_settings_override.json")
 
 # Highest supported REQUIRED_CHANNEL_N_* suffix.
@@ -236,7 +242,11 @@ def load_settings_override() -> None:
 
 
 def save_settings_override(updates: dict) -> None:
-    """Merge updates into the override file and apply to the live settings object."""
+    """Merge updates into the override file and apply to the live settings object.
+
+    Callers (the admin settings router) are responsible for serializing
+    concurrent calls — this function itself does a plain read-modify-write.
+    """
     SETTINGS_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
     existing: dict = {}
     if SETTINGS_OVERRIDE_PATH.exists():
@@ -245,9 +255,24 @@ def save_settings_override(updates: dict) -> None:
         except Exception:
             pass
     existing.update(updates)
-    SETTINGS_OVERRIDE_PATH.write_text(
-        json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+
+    # Write atomically: a crash mid-write must never leave a truncated/corrupt
+    # override file, since load_settings_override() would then silently fall
+    # back to defaults on next startup.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=SETTINGS_OVERRIDE_PATH.parent, prefix=".tmp-", suffix=".json"
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(existing, indent=2, ensure_ascii=False))
+        os.replace(tmp_path, SETTINGS_OVERRIDE_PATH)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
     for key, value in updates.items():
         if hasattr(settings, key):
             object.__setattr__(settings, key, value)
