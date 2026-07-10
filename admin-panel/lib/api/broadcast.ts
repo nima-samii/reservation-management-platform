@@ -149,6 +149,8 @@ export interface SegmentFilter {
   score?: { min?: number | null; max?: number | null } | null;
   reservation_statuses?: ReservationStatus[] | null;
   has_no_show?: boolean | null;
+  reservation_date_from?: string | null; // "YYYY-MM-DD"
+  reservation_date_to?: string | null; // "YYYY-MM-DD"
   has_username?: boolean | null;
   country_ids?: string[] | null;
   genders?: Gender[] | null;

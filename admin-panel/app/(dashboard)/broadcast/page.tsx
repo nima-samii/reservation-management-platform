@@ -624,6 +624,8 @@ function UsersTab({
   const [scoreMax, setScoreMax] = useState("");
   const [resStatuses, setResStatuses] = useState<Set<ReservationStatus>>(new Set());
   const [hasNoShow, setHasNoShow] = useState<TriState>("any");
+  const [reservationDateFrom, setReservationDateFrom] = useState("");
+  const [reservationDateTo, setReservationDateTo] = useState("");
   const [hasUsername, setHasUsername] = useState<TriState>("any");
   const [countryIds, setCountryIds] = useState<Set<string>>(new Set());
   const [countrySearch, setCountrySearch] = useState("");
@@ -683,6 +685,8 @@ function UsersTab({
     }
     if (resStatuses.size) f.reservation_statuses = Array.from(resStatuses);
     if (hasNoShow !== "any") f.has_no_show = hasNoShow === "yes";
+    if (reservationDateFrom) f.reservation_date_from = reservationDateFrom;
+    if (reservationDateTo) f.reservation_date_to = reservationDateTo;
     if (hasUsername !== "any") f.has_username = hasUsername === "yes";
     if (countryIds.size) f.country_ids = Array.from(countryIds);
     if (genders.size) f.genders = Array.from(genders);
@@ -695,7 +699,7 @@ function UsersTab({
   const request: SegmentRequest = useMemo(
     () => (mode === "quick" ? { audience_type: audience } : { filters: buildFilters() }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mode, audience, scoreMin, scoreMax, resStatuses, hasNoShow, hasUsername, countryIds, genders, createdFrom, createdTo]
+    [mode, audience, scoreMin, scoreMax, resStatuses, hasNoShow, reservationDateFrom, reservationDateTo, hasUsername, countryIds, genders, createdFrom, createdTo]
   );
 
   // Any change to the request invalidates a previously fetched preview.
@@ -882,6 +886,25 @@ function UsersTab({
                 <div>
                   <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Has username</p>
                   <TriStateSelect value={hasUsername} onChange={setHasUsername} />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Reservation date range</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={reservationDateFrom}
+                    onChange={(e) => setReservationDateFrom(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                  <span className="text-gray-600">—</span>
+                  <input
+                    type="date"
+                    value={reservationDateTo}
+                    onChange={(e) => setReservationDateTo(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
                 </div>
               </div>
 

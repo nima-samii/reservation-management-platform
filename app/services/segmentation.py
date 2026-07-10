@@ -10,14 +10,17 @@ are expressed as ``SegmentFilter`` values too (see ``quick_segment_to_filter``),
 so they share the exact same engine and stay behaviourally identical.
 """
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+import pytz
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.models.reservation import Reservation, ReservationStatus
+from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 from app.db.models.user_broadcast import UserBroadcastAudience
 
@@ -27,6 +30,7 @@ _VALID_GENDERS = {"male", "female", "not_say"}
 # json.dumps({... "no_show_penalty_applied": True}) -> '... "no_show_penalty_applied": true ...'
 # The flag is only ever written as `true`, so a substring match is reliable.
 _NO_SHOW_PATTERN = '%"no_show_penalty_applied": true%'
+_TZ = pytz.timezone(settings.TIMEZONE)
 
 
 class ScoreRange(BaseModel):
@@ -45,6 +49,8 @@ class SegmentFilter(BaseModel):
     score: Optional[ScoreRange] = None
     reservation_statuses: Optional[list[str]] = None
     has_no_show: Optional[bool] = None
+    reservation_date_from: Optional[date] = None
+    reservation_date_to: Optional[date] = None
     has_username: Optional[bool] = None
     country_ids: Optional[list[uuid.UUID]] = None
     genders: Optional[list[str]] = None
@@ -76,6 +82,16 @@ class SegmentFilter(BaseModel):
             raise ValueError(f"invalid genders: {bad}")
         return v
 
+    @model_validator(mode="after")
+    def _validate_reservation_date_range(self) -> "SegmentFilter":
+        if (
+            self.reservation_date_from is not None
+            and self.reservation_date_to is not None
+            and self.reservation_date_from > self.reservation_date_to
+        ):
+            raise ValueError("reservation_date_from must not be after reservation_date_to")
+        return self
+
 
 # ── Quick-segment ↔ filter mapping ─────────────────────────────────────────
 
@@ -101,6 +117,71 @@ def quick_segment_to_filter(audience_type: str) -> SegmentFilter:
 
 def _has_username_condition() -> ColumnElement[bool]:
     return and_(User.username.is_not(None), User.username != "")
+
+
+def _no_show_predicate(matches: bool) -> ColumnElement[bool]:
+    cond = Reservation.notes.like(_NO_SHOW_PATTERN)
+    if matches:
+        return cond
+    # NULL-safe negation: `notes` is NULL for the common case of "no notes at
+    # all", and a reservation with no notes is clearly "not a no-show" — but
+    # plain `~cond` evaluates to SQL NULL (not TRUE) when notes IS NULL, which
+    # would silently drop that row from the correlated EXISTS below.
+    return or_(Reservation.notes.is_(None), ~cond)
+
+
+def _reservation_date_bounds(
+    date_from: Optional[date], date_to: Optional[date]
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Convert an optional local-calendar-day range (project timezone) into UTC
+    datetime bounds, so ReservationSlot.slot_datetime can be range-scanned on
+    its existing plain index directly — no timezone() wrapping of the column
+    at query time, no functional index required. Upper bound is exclusive
+    (start of the day after ``date_to``) so the range stays inclusive of the
+    whole local day on both ends."""
+    lo = _TZ.localize(datetime.combine(date_from, time.min)).astimezone(pytz.utc) if date_from else None
+    hi = (
+        _TZ.localize(datetime.combine(date_to, time.min)).astimezone(pytz.utc) + timedelta(days=1)
+        if date_to
+        else None
+    )
+    return lo, hi
+
+
+def _build_reservation_condition(f: SegmentFilter) -> Optional[ColumnElement[bool]]:
+    """AND every reservation-scoped predicate (status, no-show, scheduled date)
+    into a single correlated EXISTS against Reservation (+ ReservationSlot when
+    a date bound is set), so they must all be satisfied by the SAME reservation
+    row — never independently by different reservations of the same user.
+
+    Returns None when no reservation-scoped predicate is active.
+    """
+    predicates: list[ColumnElement[bool]] = []
+
+    if f.reservation_statuses:
+        predicates.append(Reservation.status.in_(f.reservation_statuses))
+    if f.has_no_show is not None:
+        predicates.append(_no_show_predicate(f.has_no_show))
+
+    date_lo, date_hi = _reservation_date_bounds(f.reservation_date_from, f.reservation_date_to)
+    if date_lo is not None:
+        predicates.append(ReservationSlot.slot_datetime >= date_lo)
+    if date_hi is not None:
+        predicates.append(ReservationSlot.slot_datetime < date_hi)
+
+    if not predicates:
+        return None
+
+    if date_lo is not None or date_hi is not None:
+        sub = (
+            select(1)
+            .select_from(Reservation)
+            .join(ReservationSlot, Reservation.slot_id == ReservationSlot.id)
+            .where(Reservation.user_id == User.id, *predicates)
+        )
+        return exists(sub)
+
+    return exists().where(Reservation.user_id == User.id, *predicates)
 
 
 class SegmentationService:
@@ -151,25 +232,18 @@ class SegmentationService:
         if f.created_to is not None:
             c.append(User.created_at <= f.created_to)
 
-        # ── Reservation-derived (EXISTS subqueries) ────────────────────────
+        # ── Reservation-derived ─────────────────────────────────────────────
+        # has_reservations is a pure existence check, independent of every
+        # other reservation predicate.
         if f.has_reservations is not None:
             sub = exists().where(Reservation.user_id == User.id)
             c.append(sub if f.has_reservations else ~sub)
 
-        if f.reservation_statuses:
-            c.append(
-                exists().where(
-                    Reservation.user_id == User.id,
-                    Reservation.status.in_(f.reservation_statuses),
-                )
-            )
-
-        if f.has_no_show is not None:
-            ns = exists().where(
-                Reservation.user_id == User.id,
-                Reservation.notes.like(_NO_SHOW_PATTERN),
-            )
-            c.append(ns if f.has_no_show else ~ns)
+        # status / no-show / date-range must all hold on the SAME reservation
+        # row, so they are combined into a single correlated EXISTS.
+        reservation_cond = _build_reservation_condition(f)
+        if reservation_cond is not None:
+            c.append(reservation_cond)
 
         return c
 

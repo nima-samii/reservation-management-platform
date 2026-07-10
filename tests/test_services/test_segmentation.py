@@ -6,9 +6,10 @@ segment mapping, recipient selection, and count↔recipient consistency.
 Requires the test Postgres database configured in tests/conftest.py.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from app.db.models.channel import Channel
 from app.db.models.reservation import Reservation, ReservationStatus
@@ -22,12 +23,21 @@ from app.services.segmentation import (
 )
 
 _code_seq = 0
+_chan_seq = 0
 
 
 def _code() -> str:
     global _code_seq
     _code_seq += 1
     return f"{_code_seq:06d}"
+
+
+def _next_channel_tg() -> int:
+    # Unique per call (not per user) so a single user can hold multiple
+    # reservations, each needing its own Channel (telegram_channel_id unique).
+    global _chan_seq
+    _chan_seq += 1
+    return -(900000 + _chan_seq)
 
 
 async def _user(session, *, tg, score=0, username="u", gender="male",
@@ -53,12 +63,20 @@ async def _user(session, *, tg, score=0, username="u", gender="male",
     return u
 
 
-async def _reservation(session, user, *, status=ReservationStatus.ACTIVE.value, no_show=False):
-    ch = Channel(name="C", telegram_channel_id=-(900000 + user.telegram_id), capacity=50)
+async def _reservation(
+    session,
+    user,
+    *,
+    status=ReservationStatus.ACTIVE.value,
+    no_show=False,
+    slot_datetime=None,
+):
+    ch = Channel(name="C", telegram_channel_id=_next_channel_tg(), capacity=50)
     session.add(ch)
     await session.flush()
     slot = ReservationSlot(
-        slot_datetime=datetime(2026, 8, 1, 18, 0, tzinfo=timezone.utc), channel_id=ch.id
+        slot_datetime=slot_datetime or datetime(2026, 8, 1, 18, 0, tzinfo=timezone.utc),
+        channel_id=ch.id,
     )
     session.add(slot)
     await session.flush()
@@ -118,6 +136,187 @@ async def test_has_no_show(db_session):
 
     assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=True))) == {20}
     assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=False))) == {21}
+
+
+# ── Reservation date range ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reservation_date_from(db_session):
+    u1 = await _user(db_session, tg=200)
+    u2 = await _user(db_session, tg=201)
+    await _reservation(db_session, u1, slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc))
+    await _reservation(db_session, u2, slot_datetime=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
+    svc = SegmentationService(db_session)
+
+    got = await svc.fetch_recipients(SegmentFilter(reservation_date_from=date(2026, 8, 1)))
+    assert _tgs(got) == {200}
+
+
+@pytest.mark.asyncio
+async def test_reservation_date_to(db_session):
+    u1 = await _user(db_session, tg=210)
+    u2 = await _user(db_session, tg=211)
+    await _reservation(db_session, u1, slot_datetime=datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc))
+    await _reservation(db_session, u2, slot_datetime=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc))
+    svc = SegmentationService(db_session)
+
+    got = await svc.fetch_recipients(SegmentFilter(reservation_date_to=date(2026, 8, 31)))
+    assert _tgs(got) == {210}
+
+
+@pytest.mark.asyncio
+async def test_reservation_date_range(db_session):
+    u1 = await _user(db_session, tg=220)  # inside range
+    u2 = await _user(db_session, tg=221)  # before range
+    u3 = await _user(db_session, tg=222)  # after range
+    await _reservation(db_session, u1, slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc))
+    await _reservation(db_session, u2, slot_datetime=datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc))
+    await _reservation(db_session, u3, slot_datetime=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc))
+    svc = SegmentationService(db_session)
+
+    got = await svc.fetch_recipients(
+        SegmentFilter(reservation_date_from=date(2026, 8, 1), reservation_date_to=date(2026, 8, 31))
+    )
+    assert _tgs(got) == {220}
+
+
+@pytest.mark.asyncio
+async def test_reservation_date_range_open_ended(db_session):
+    """from-only and to-only behave as half-open ranges, independent of each other."""
+    u1 = await _user(db_session, tg=230)
+    await _reservation(db_session, u1, slot_datetime=datetime(2026, 12, 31, 12, 0, tzinfo=timezone.utc))
+    svc = SegmentationService(db_session)
+
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(reservation_date_from=date(2026, 1, 1)))) == {230}
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(reservation_date_to=date(2026, 12, 31)))) == {230}
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(reservation_date_to=date(2026, 12, 30)))) == set()
+
+
+@pytest.mark.asyncio
+async def test_reservation_date_range_timezone_boundary(db_session):
+    """A slot at 2026-07-31 22:00 UTC is 2026-08-01 01:00 in Asia/Baghdad (+3h) —
+    it must count as an August 1st reservation despite its UTC date being July 31."""
+    u1 = await _user(db_session, tg=240)
+    await _reservation(db_session, u1, slot_datetime=datetime(2026, 7, 31, 22, 0, tzinfo=timezone.utc))
+    svc = SegmentationService(db_session)
+
+    got = await svc.fetch_recipients(
+        SegmentFilter(reservation_date_from=date(2026, 8, 1), reservation_date_to=date(2026, 8, 1))
+    )
+    assert _tgs(got) == {240}
+    # And it must NOT count as July 31st under the same local-day semantics.
+    got = await svc.fetch_recipients(
+        SegmentFilter(reservation_date_from=date(2026, 7, 31), reservation_date_to=date(2026, 7, 31))
+    )
+    assert _tgs(got) == set()
+
+
+def test_invalid_reservation_date_range():
+    with pytest.raises(ValidationError):
+        SegmentFilter(reservation_date_from=date(2026, 8, 31), reservation_date_to=date(2026, 8, 1))
+
+
+# ── Reservation filter correlation (same reservation row) ───────────────────
+# Regression coverage for the bug where independent EXISTS clauses let each
+# reservation-scoped predicate be satisfied by a *different* reservation of
+# the same user. All of the following construct a user whose reservations
+# each satisfy only ONE predicate in isolation, and assert the combined
+# filter correctly finds nobody — only a user with a SINGLE reservation
+# satisfying every predicate at once should match.
+
+@pytest.mark.asyncio
+async def test_status_and_date_must_match_same_reservation(db_session):
+    mismatched = await _user(db_session, tg=250)
+    # Completed, but in July (outside the target range).
+    await _reservation(
+        db_session, mismatched, status=ReservationStatus.COMPLETED.value,
+        slot_datetime=datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    # Active (not completed), but in August (inside the target range).
+    await _reservation(
+        db_session, mismatched, status=ReservationStatus.ACTIVE.value,
+        slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    matched = await _user(db_session, tg=251)
+    # A single reservation satisfying both: completed AND in August.
+    await _reservation(
+        db_session, matched, status=ReservationStatus.COMPLETED.value,
+        slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    svc = SegmentationService(db_session)
+    f = SegmentFilter(
+        reservation_statuses=["completed"],
+        reservation_date_from=date(2026, 8, 1),
+        reservation_date_to=date(2026, 8, 31),
+    )
+    assert _tgs(await svc.fetch_recipients(f)) == {251}
+
+
+@pytest.mark.asyncio
+async def test_no_show_and_date_must_match_same_reservation(db_session):
+    mismatched = await _user(db_session, tg=260)
+    # No-show, but in July.
+    await _reservation(
+        db_session, mismatched, no_show=True,
+        slot_datetime=datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    # In August, but not a no-show.
+    await _reservation(
+        db_session, mismatched, no_show=False,
+        slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    matched = await _user(db_session, tg=261)
+    await _reservation(
+        db_session, matched, no_show=True,
+        slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    svc = SegmentationService(db_session)
+    f = SegmentFilter(
+        has_no_show=True,
+        reservation_date_from=date(2026, 8, 1),
+        reservation_date_to=date(2026, 8, 31),
+    )
+    assert _tgs(await svc.fetch_recipients(f)) == {261}
+
+
+@pytest.mark.asyncio
+async def test_status_no_show_and_date_must_match_same_reservation(db_session):
+    """The exact three-way scenario from the design review: status, no-show,
+    and date range must all hold on the same reservation, not three different
+    reservations belonging to the same user."""
+    mismatched = await _user(db_session, tg=270)
+    # Completed + no-show, but in March (outside range).
+    await _reservation(
+        db_session, mismatched, status=ReservationStatus.COMPLETED.value, no_show=True,
+        slot_datetime=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    # In August, but active (not completed) and not a no-show.
+    await _reservation(
+        db_session, mismatched, status=ReservationStatus.ACTIVE.value, no_show=False,
+        slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    matched = await _user(db_session, tg=271)
+    await _reservation(
+        db_session, matched, status=ReservationStatus.COMPLETED.value, no_show=True,
+        slot_datetime=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    svc = SegmentationService(db_session)
+    f = SegmentFilter(
+        reservation_statuses=["completed"],
+        has_no_show=True,
+        reservation_date_from=date(2026, 8, 1),
+        reservation_date_to=date(2026, 8, 31),
+    )
+    assert _tgs(await svc.fetch_recipients(f)) == {271}
+    # count()/stats() must agree with fetch_recipients() (shared build_conditions()).
+    assert (await svc.count(f)) == 1
+    assert (await svc.stats(f))["count"] == 1
 
 
 # ── Username ─────────────────────────────────────────────────────────────────
