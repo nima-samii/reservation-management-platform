@@ -11,7 +11,7 @@ const NAV_ITEMS = [
   { href: "/reservations", label: "Reservations", icon: "📅" },
   { href: "/channels", label: "Channels", icon: "📡" },
   { href: "/broadcast", label: "Broadcast", icon: "📢" },
-  { href: "/schedule-events", label: "Schedule Events", icon: "🗓" },
+  { href: "/schedule-events", label: "Broadcast Events", icon: "🗓" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
   { href: "/jobs", label: "Jobs", icon: "⚡" },
 ];

@@ -73,13 +73,13 @@ function EventFormRow({
           ))}
         </select>
       </td>
-      <td className="px-3 py-2">
-        <input
-          type="text"
+      <td className="px-3 py-2 align-top">
+        <textarea
           value={form.title}
           onChange={(e) => setForm({ ...form, title: e.target.value })}
-          placeholder="Event title"
-          className="bg-gray-800 border border-gray-700 text-white text-xs rounded px-2 py-1 w-full min-w-[180px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          placeholder="Enter announcement message..."
+          rows={3}
+          className="bg-gray-800 border border-gray-700 text-white text-xs rounded px-2 py-1 w-full min-w-[240px] resize-y focus:outline-none focus:ring-1 focus:ring-indigo-500"
         />
       </td>
       <td className="px-3 py-2">
@@ -220,7 +220,12 @@ export default function ScheduleEventsPage() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-white">Schedule Events</h1>
+        <div>
+          <h1 className="text-xl font-semibold text-white">Broadcast Events</h1>
+          <p className="text-sm text-gray-500 mt-0.5">
+            Manage custom announcements that appear in daily broadcast messages.
+          </p>
+        </div>
         <button
           onClick={() => { setShowAddRow(true); setEditingId(null); }}
           className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
@@ -261,15 +266,15 @@ export default function ScheduleEventsPage() {
 
       {/* Table */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm table-fixed">
           <thead className="bg-gray-800 text-gray-500 text-xs">
             <tr>
-              <th className="px-3 py-2 text-left">Date</th>
-              <th className="px-3 py-2 text-left">Channel</th>
-              <th className="px-3 py-2 text-left">Title</th>
-              <th className="px-3 py-2 text-left">Order</th>
-              <th className="px-3 py-2 text-left">Active</th>
-              <th className="px-3 py-2 text-left">Actions</th>
+              <th className="px-3 py-2 text-left w-28">Date</th>
+              <th className="px-3 py-2 text-left w-36">Channel</th>
+              <th className="px-3 py-2 text-left">Message</th>
+              <th className="px-3 py-2 text-left w-16">Order</th>
+              <th className="px-3 py-2 text-left w-16">Active</th>
+              <th className="px-3 py-2 text-left w-32">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -293,7 +298,10 @@ export default function ScheduleEventsPage() {
             ) : events.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-gray-600">
-                  No events in this range.
+                  <p>No broadcast announcements scheduled yet.</p>
+                  <p className="text-xs text-gray-700 mt-1">
+                    Create an event to add a custom message to a daily broadcast.
+                  </p>
                 </td>
               </tr>
             ) : (
@@ -325,7 +333,14 @@ export default function ScheduleEventsPage() {
                         <span className="text-gray-600 italic">All channels</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-white">{ev.title}</td>
+                    <td className="px-3 py-2 text-white">
+                      <span
+                        className="block truncate whitespace-nowrap"
+                        title={ev.title}
+                      >
+                        {ev.title}
+                      </span>
+                    </td>
                     <td className="px-3 py-2 text-gray-400">{ev.sort_order}</td>
                     <td className="px-3 py-2">
                       <button
