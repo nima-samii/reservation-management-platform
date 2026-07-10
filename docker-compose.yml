@@ -67,15 +67,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       REDIS_HOST: redis
       BOT_TOKEN: ${BOT_TOKEN}
-      CHANNEL_1_ID: ${CHANNEL_1_ID:-}
-      CHANNEL_1_NAME: ${CHANNEL_1_NAME:-Channel 1}
-      CHANNEL_1_INVITE: ${CHANNEL_1_INVITE:-}
-      CHANNEL_2_ID: ${CHANNEL_2_ID:-}
-      CHANNEL_2_NAME: ${CHANNEL_2_NAME:-Channel 2}
-      CHANNEL_2_INVITE: ${CHANNEL_2_INVITE:-}
-      CHANNEL_3_ID: ${CHANNEL_3_ID:-}
-      CHANNEL_3_NAME: ${CHANNEL_3_NAME:-Channel 3}
-      CHANNEL_3_INVITE: ${CHANNEL_3_INVITE:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -131,16 +122,6 @@ services:
       INACTIVITY_REMINDER_ENABLED: ${INACTIVITY_REMINDER_ENABLED:-true}
       INACTIVITY_REMINDER_THRESHOLD_DAYS: ${INACTIVITY_REMINDER_THRESHOLD_DAYS:-30}
       INACTIVITY_REMINDER_HOUR: ${INACTIVITY_REMINDER_HOUR:-18}
-      # ── Channels ──────────────────────────────────────────────────
-      CHANNEL_1_ID: ${CHANNEL_1_ID:-}
-      CHANNEL_1_NAME: ${CHANNEL_1_NAME:-}
-      CHANNEL_1_INVITE: ${CHANNEL_1_INVITE:-}
-      CHANNEL_2_ID: ${CHANNEL_2_ID:-}
-      CHANNEL_2_NAME: ${CHANNEL_2_NAME:-}
-      CHANNEL_2_INVITE: ${CHANNEL_2_INVITE:-}
-      CHANNEL_3_ID: ${CHANNEL_3_ID:-}
-      CHANNEL_3_NAME: ${CHANNEL_3_NAME:-}
-      CHANNEL_3_INVITE: ${CHANNEL_3_INVITE:-}
       # ── Mandatory Channel Membership ──────────────────────────────
       REQUIRED_CHANNEL_1_ID: ${REQUIRED_CHANNEL_1_ID:-}
       REQUIRED_CHANNEL_1_URL: ${REQUIRED_CHANNEL_1_URL:-}

@@ -1,11 +1,10 @@
 """
-Seed script: populate countries and default channels.
+Seed script: populate countries.
 Run once after the initial migration:
     python scripts/seed_countries.py
 
-Channel env vars (optional — placeholders used if not set):
-  CHANNEL_1_NAME, CHANNEL_1_ID, CHANNEL_1_INVITE
-  CHANNEL_2_NAME, CHANNEL_2_ID, CHANNEL_2_INVITE
+Reservation channels are no longer seeded here — create them through the
+Admin Panel → Channels page after deployment.
 """
 import asyncio
 import sys
@@ -15,7 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import select
 
-from app.db.models.channel import Channel
 from app.db.models.country import Country
 from app.db.session import AsyncSessionFactory
 
@@ -212,25 +210,6 @@ COUNTRIES: list[dict] = [
 ]
 
 
-def _build_channel_defaults() -> list[dict]:
-    channels = []
-    for i in range(1, 4):
-        ch_id_env = os.environ.get(f"CHANNEL_{i}_ID")
-        if i == 1 and not ch_id_env:
-            # Always seed at least one placeholder channel so slot generation works
-            ch_id_env = "-1001000000001"
-        if not ch_id_env:
-            continue
-        channels.append({
-            "name": os.environ.get(f"CHANNEL_{i}_NAME", f"Channel {i}"),
-            "telegram_channel_id": int(ch_id_env),
-            "invite_link": os.environ.get(f"CHANNEL_{i}_INVITE") or None,
-            "priority": i - 1,
-            "is_active": True,
-        })
-    return channels
-
-
 async def seed() -> None:
     import uuid
     async with AsyncSessionFactory() as session:
@@ -251,31 +230,6 @@ async def seed() -> None:
 
         await session.commit()
         print(f"✅ Seeded {len(COUNTRIES)} countries.")
-
-        # ── Channels ───────────────────────────────────────────────────────
-        channel_defs = _build_channel_defaults()
-        seeded_channels = 0
-        for ch in channel_defs:
-            existing = await session.execute(
-                select(Channel).where(
-                    Channel.telegram_channel_id == ch["telegram_channel_id"]
-                )
-            )
-            if existing.scalars().first():
-                continue
-            session.add(Channel(
-                id=uuid.uuid4(),
-                name=ch["name"],
-                telegram_channel_id=ch["telegram_channel_id"],
-                invite_link=ch["invite_link"],
-                capacity=100,
-                priority=ch["priority"],
-                is_active=ch["is_active"],
-            ))
-            seeded_channels += 1
-
-        await session.commit()
-        print(f"✅ Seeded {seeded_channels} channel(s).")
 
 
 if __name__ == "__main__":

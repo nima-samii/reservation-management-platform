@@ -28,6 +28,39 @@ class ChannelRepository(BaseRepository[Channel]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_max_priority(self) -> int:
+        stmt = select(func.max(Channel.priority))
+        result = await self.session.execute(stmt)
+        return result.scalar() or 0
+
+    async def get_neighbor(self, channel: Channel, direction: str) -> Channel | None:
+        """The adjacent channel in priority order, for move-up/down reordering."""
+        stmt = select(Channel).order_by(
+            Channel.priority.desc() if direction == "up" else Channel.priority.asc()
+        )
+        if direction == "up":
+            stmt = stmt.where(Channel.priority < channel.priority)
+        else:
+            stmt = stmt.where(Channel.priority > channel.priority)
+        result = await self.session.execute(stmt.limit(1))
+        return result.scalars().first()
+
+    async def has_any_slots_or_reservations(self, channel_id: uuid.UUID) -> bool:
+        """Whether any reservation_slots or reservations row references this
+        channel (past or future) — mirrors the ON DELETE RESTRICT FK so the
+        API can reject with a clean 422 instead of a raw IntegrityError."""
+        slot_stmt = select(func.count(ReservationSlot.id)).where(
+            ReservationSlot.channel_id == channel_id
+        )
+        reservation_stmt = select(func.count(Reservation.id)).where(
+            Reservation.channel_id == channel_id
+        )
+        slot_count = (await self.session.execute(slot_stmt)).scalar() or 0
+        if slot_count:
+            return True
+        reservation_count = (await self.session.execute(reservation_stmt)).scalar() or 0
+        return bool(reservation_count)
+
     async def get_reservation_count_for_date(
         self, channel_id: uuid.UUID, slot_date: date
     ) -> int:
