@@ -8,6 +8,11 @@ set -e
 if [ "$(id -u)" = "0" ]; then
     mkdir -p /app/data
     chown -R appuser:appgroup /app/data
+    # setpriv changes uid/gid but not the environment. HOME would stay /root,
+    # which appuser cannot even stat — asyncpg then crashes probing
+    # ~/.postgresql/postgresql.key. Point HOME at appuser's passwd entry.
+    HOME="$(getent passwd appuser | cut -d: -f6)"
+    export HOME
     exec setpriv --reuid appuser --regid appgroup --clear-groups "$@"
 fi
 
