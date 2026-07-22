@@ -58,6 +58,11 @@ class CacheKey:
     def pre_session_reminder_lock() -> str:
         return "lock:reminder:pre_session"
 
+    # Final live reminder lock (runs every minute)
+    @staticmethod
+    def final_reminder_lock() -> str:
+        return "lock:reminder:final"
+
     # Daily schedule broadcast lock (runs once at noon)
     @staticmethod
     def daily_broadcast_lock() -> str:

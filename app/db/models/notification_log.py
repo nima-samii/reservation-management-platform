@@ -12,6 +12,7 @@ from app.db.base import Base, UUIDMixin
 class ReminderType(str, Enum):
     SAME_DAY = "same_day"
     PRE_SESSION = "pre_session"
+    FINAL = "final"
 
 
 class DeliveryStatus(str, Enum):

@@ -150,6 +150,18 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         description="Minutes before session start the reminder is sent. Read live on every poll.",
         value_type=int, example=30, validator="int_range", min=5, max=180,
     ),
+    SettingMeta(
+        key="FINAL_REMINDER_ENABLED", json_key="final_reminder_enabled",
+        category="reminders", label="Enable final live reminder",
+        description="Master switch: send a final \"join now\" reminder minutes before the session starts.",
+        value_type=bool, example=True, validator="bool",
+    ),
+    SettingMeta(
+        key="FINAL_REMINDER_MINUTES", json_key="final_reminder_minutes",
+        category="reminders", label="Final reminder (minutes)",
+        description="Minutes before session start the final reminder fires. Forward-only window [now, now+N). Read live on every poll.",
+        value_type=int, example=5, validator="int_range", min=1, max=60,
+    ),
     # ── Score Notifications ──────────────────────────────────────────────
     SettingMeta(
         key="SCORE_CHANGE_NOTIFICATIONS_ENABLED", json_key="score_change_notifications_enabled",

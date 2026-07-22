@@ -36,6 +36,12 @@ export const JOB_METADATA: Record<string, JobMetadata> = {
       "Sends a Telegram message to users about 30 minutes before their session begins.",
     schedule: "Every 5 minutes",
   },
+  final_reminders: {
+    name: "Send Final Live Reminders",
+    description:
+      "Sends a final “join now” message a few minutes before each session starts, guiding the user into the live channel.",
+    schedule: "Every minute",
+  },
   daily_broadcast: {
     name: "Post Daily Schedule",
     description:

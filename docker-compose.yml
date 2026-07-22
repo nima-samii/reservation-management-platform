@@ -114,6 +114,8 @@ services:
       # ── Notifications & Reminders ─────────────────────────────────
       SAME_DAY_REMINDER_HOUR: ${SAME_DAY_REMINDER_HOUR:-12}
       PRE_SESSION_REMINDER_MINUTES: ${PRE_SESSION_REMINDER_MINUTES:-30}
+      FINAL_REMINDER_ENABLED: ${FINAL_REMINDER_ENABLED:-true}
+      FINAL_REMINDER_MINUTES: ${FINAL_REMINDER_MINUTES:-5}
       # ── Daily Broadcast ───────────────────────────────────────────
       DAILY_BROADCAST_HOUR: ${DAILY_BROADCAST_HOUR:-12}
       ENABLE_BROADCAST_AUTO_PIN: ${ENABLE_BROADCAST_AUTO_PIN:-true}

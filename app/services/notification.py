@@ -61,13 +61,34 @@ class ReminderService:
         from_dt = now + timedelta(minutes=window - 5)
         to_dt = now + timedelta(minutes=window + 5)
 
-        reservations = await self._notif_repo.get_reservations_for_pre_session_reminder(
-            from_dt, to_dt
+        reservations = await self._notif_repo.get_reservations_for_window_reminder(
+            ReminderType.PRE_SESSION, from_dt, to_dt
         )
 
         sent = 0
         for reservation in reservations:
             ok = await self._deliver_pre_session(reservation)
+            if ok:
+                sent += 1
+
+        return sent
+
+    async def send_final_reminders(self) -> int:
+        """Send the final "join now" reminder. Uses a forward-only window
+        [now, now + FINAL_REMINDER_MINUTES): a session is reminded on the first
+        tick it comes within FINAL_REMINDER_MINUTES of starting, and never before,
+        so this reminder can never fire early."""
+        now = datetime.now(TZ)
+        from_dt = now
+        to_dt = now + timedelta(minutes=settings.FINAL_REMINDER_MINUTES)
+
+        reservations = await self._notif_repo.get_reservations_for_window_reminder(
+            ReminderType.FINAL, from_dt, to_dt, upper_inclusive=False
+        )
+
+        sent = 0
+        for reservation in reservations:
+            ok = await self._deliver_final(reservation)
             if ok:
                 sent += 1
 
@@ -108,6 +129,31 @@ class ReminderService:
         text += "\nSee you soon ✨"
 
         return await self._log_and_send(reservation, ReminderType.PRE_SESSION, user.telegram_id, text)
+
+    async def _deliver_final(self, reservation: Reservation) -> bool:
+        user = reservation.user
+        channel = reservation.slot.channel
+
+        if channel.invite_link:
+            join_block = (
+                "Please join the live channel using the link below.\n\n"
+                f'👉 <a href="{channel.invite_link}">Join Live Session</a>'
+            )
+        else:
+            join_block = "Please open the Telegram channel from your previous invitation."
+
+        text = (
+            "🔴 <b>Your live session is about to begin!</b>\n\n"
+            f"{join_block}\n\n"
+            "<b>Before you start:</b>\n\n"
+            "• Tap ✋ <b>Raise Hand</b> to request microphone access.\n"
+            "• Wait until the admin enables your microphone.\n"
+            "• Once enabled, tap the microphone icon and begin your session.\n\n"
+            "If the live session hasn't started yet, please wait <b>2–3 minutes</b> and try again.\n\n"
+            "Good luck! 🎤"
+        )
+
+        return await self._log_and_send(reservation, ReminderType.FINAL, user.telegram_id, text)
 
     async def _log_and_send(
         self,

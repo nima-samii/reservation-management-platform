@@ -6,7 +6,11 @@ from app.core.logging import get_logger
 from app.schedulers.jobs.broadcast import send_daily_schedule_job
 from app.schedulers.jobs.inactivity_reminder import send_inactivity_reminders_job
 from app.schedulers.jobs.recurring_broadcast import dispatch_recurring_broadcasts_job
-from app.schedulers.jobs.reminders import send_pre_session_reminders_job, send_same_day_reminders_job
+from app.schedulers.jobs.reminders import (
+    send_final_reminders_job,
+    send_pre_session_reminders_job,
+    send_same_day_reminders_job,
+)
 from app.schedulers.jobs.reservation_lifecycle import complete_past_reservations_job
 from app.schedulers.jobs.slot_generation import generate_upcoming_slots
 
@@ -60,6 +64,16 @@ def create_scheduler() -> AsyncIOScheduler:
         send_pre_session_reminders_job,
         trigger=CronTrigger(minute="*/5", timezone=settings.TIMEZONE),
         id="pre_session_reminders",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Run every minute — final "join now" reminder just before session start
+    scheduler.add_job(
+        send_final_reminders_job,
+        trigger=CronTrigger(minute="*", timezone=settings.TIMEZONE),
+        id="final_reminders",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

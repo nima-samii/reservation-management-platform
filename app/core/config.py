@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     SAME_DAY_REMINDER_HOUR: int = 12
     # Minutes before session start to send the pre-session reminder
     PRE_SESSION_REMINDER_MINUTES: int = 30
+    # Master switch: send a final "join now" reminder shortly before start.
+    FINAL_REMINDER_ENABLED: bool = True
+    # Minutes before session start to send the final live reminder. The window
+    # is forward-only — [now, now + FINAL_REMINDER_MINUTES) — so it never fires early.
+    FINAL_REMINDER_MINUTES: int = 5
 
     # ── Score-change notifications ────────────────────────────────────────
     # Master switch: DM the user whenever their participation score changes.

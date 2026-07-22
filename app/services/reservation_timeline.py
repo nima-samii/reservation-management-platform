@@ -46,6 +46,7 @@ _TYPE_ORDER = {
 _REMINDER_TITLES = {
     "same_day": "Same-Day Reminder Sent",
     "pre_session": "Pre-Session Reminder Sent",
+    "final": "Final Live Reminder Sent",
 }
 
 

@@ -3,6 +3,7 @@ from datetime import date, datetime
 
 import sqlalchemy as sa
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,14 +24,34 @@ class NotificationRepository(BaseRepository[NotificationLog]):
         reminder_type: ReminderType,
         status: DeliveryStatus,
         error_message: str | None = None,
-    ) -> NotificationLog:
-        entry = NotificationLog(
-            reservation_id=reservation_id,
-            reminder_type=reminder_type.value,
-            status=status.value,
-            error_message=error_message,
+    ) -> None:
+        """Record the outcome of a reminder send.
+
+        Upsert on the ``(reservation_id, reminder_type)`` unique constraint: a
+        first attempt inserts; a retry after an earlier FAILED attempt overwrites
+        that row in place. This keeps the existing unique constraint intact (no
+        migration) while letting the time-window queries retry failures — a SENT
+        row is never revisited because those queries filter it out before we ever
+        try to send again.
+        """
+        stmt = (
+            pg_insert(NotificationLog)
+            .values(
+                reservation_id=reservation_id,
+                reminder_type=reminder_type.value,
+                status=status.value,
+                error_message=error_message,
+            )
+            .on_conflict_do_update(
+                constraint="uq_notification_log_reservation_type",
+                set_={
+                    "status": status.value,
+                    "error_message": error_message,
+                    "sent_at": sa.func.now(),
+                },
+            )
         )
-        return await self.save(entry)
+        await self.session.execute(stmt)
 
     async def get_for_reservation(
         self, reservation_id: uuid.UUID
@@ -77,15 +98,41 @@ class NotificationRepository(BaseRepository[NotificationLog]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_reservations_for_pre_session_reminder(
-        self, from_dt: datetime, to_dt: datetime
+    async def get_reservations_for_window_reminder(
+        self,
+        reminder_type: ReminderType,
+        from_dt: datetime,
+        to_dt: datetime,
+        *,
+        upper_inclusive: bool = True,
     ) -> list[Reservation]:
-        """Return active reservations with slot_datetime in [from_dt, to_dt]
-        that have not yet received a PRE_SESSION reminder."""
+        """Return active reservations whose slot falls in a time window and that
+        have not yet been *successfully* sent ``reminder_type``.
+
+        The window is ``[from_dt, to_dt]`` by default, or ``[from_dt, to_dt)``
+        when ``upper_inclusive`` is False (the forward-only window the final
+        reminder uses so it never fires early).
+
+        Deduplication keys on SENT logs only: a FAILED row stays eligible, so a
+        transient failure is retried on the next tick while the reservation is
+        still inside the window — without ever re-sending a delivered reminder
+        (the paired upsert in :meth:`log` overwrites the FAILED row on retry).
+
+        Shared by the pre-session and final reminders; future time-window
+        reminder types reuse it by passing their own ``reminder_type`` and window.
+        """
         already_sent = (
             select(NotificationLog.reservation_id)
-            .where(NotificationLog.reminder_type == ReminderType.PRE_SESSION.value)
+            .where(
+                NotificationLog.reminder_type == reminder_type.value,
+                NotificationLog.status == DeliveryStatus.SENT.value,
+            )
             .scalar_subquery()
+        )
+        upper_bound = (
+            ReservationSlot.slot_datetime <= to_dt
+            if upper_inclusive
+            else ReservationSlot.slot_datetime < to_dt
         )
         stmt = (
             select(Reservation)
@@ -93,7 +140,7 @@ class NotificationRepository(BaseRepository[NotificationLog]):
             .where(
                 Reservation.status == ReservationStatus.ACTIVE,
                 ReservationSlot.slot_datetime >= from_dt,
-                ReservationSlot.slot_datetime <= to_dt,
+                upper_bound,
                 Reservation.id.not_in(already_sent),
             )
             .options(
