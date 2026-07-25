@@ -230,6 +230,7 @@ async def test_retry_roundtrip_upserts_single_row(db_session):
 @pytest.fixture
 def svc():
     s = ReminderService.__new__(ReminderService)
+    s._session = AsyncMock()  # per-item commit persists each dedup log immediately
     s._notif_repo = AsyncMock()
     s._notif_svc = AsyncMock()
     return s

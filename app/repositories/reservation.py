@@ -92,6 +92,46 @@ class ReservationRepository(BaseRepository[Reservation]):
         result = await self.session.execute(stmt)
         return result.rowcount
 
+    async def transition_active_to_cancelled(
+        self,
+        reservation_id: uuid.UUID,
+        *,
+        cancelled_by: str | None = None,
+        cancelled_at: datetime | None = None,
+        cancellation_reason: str | None = None,
+    ) -> bool:
+        """Atomically flip an ACTIVE reservation to CANCELLED.
+
+        The conditional ``WHERE status = 'active'`` is the race guard: two
+        concurrent cancellations (a double-tapped inline button, or a user
+        cancel racing an admin cancel / the lifecycle-completion job) serialize
+        on the row lock, and only the first observes ``rowcount == 1``. The loser
+        observes ``rowcount == 0`` and must NOT apply a second score rollback or
+        write a duplicate audit row. Returns True iff this caller won the
+        transition.
+        """
+        values: dict = {"status": ReservationStatus.CANCELLED}
+        if (
+            cancelled_by is not None
+            or cancelled_at is not None
+            or cancellation_reason is not None
+        ):
+            values["cancelled_by"] = cancelled_by
+            values["cancelled_at"] = cancelled_at
+            values["cancellation_reason"] = cancellation_reason
+
+        stmt = (
+            update(Reservation)
+            .where(
+                Reservation.id == reservation_id,
+                Reservation.status == ReservationStatus.ACTIVE,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return (result.rowcount or 0) > 0
+
     async def has_reservation_on_date(
         self, user_id: uuid.UUID, target_date: datetime
     ) -> bool:

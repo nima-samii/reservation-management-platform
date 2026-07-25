@@ -1,8 +1,9 @@
+import asyncio
 from datetime import datetime, timedelta
 
 import pytz
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -22,23 +23,62 @@ class NotificationService:
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
 
+    #: How many times to honor a Telegram flood-wait (429) before giving up.
+    _MAX_FLOOD_RETRIES = 3
+
     async def send(self, telegram_id: int, text: str) -> tuple[bool, str | None]:
-        """Send a message. Returns (success, error_message)."""
-        try:
-            await self._bot.send_message(telegram_id, text, parse_mode="HTML")
-            return True, None
-        except TelegramAPIError as exc:
-            return False, str(exc)
-        except Exception as exc:
-            return False, f"unexpected: {exc}"
+        """Send a message. Returns (success, error_message).
+
+        On ``TelegramRetryAfter`` (HTTP 429 flood control) the send waits the
+        server-mandated interval and retries, so a rate-limit hit does not turn
+        into a false FAILED (which for a single-attempt same-day reminder would
+        drop the message entirely). Other Telegram errors fail fast as before.
+        """
+        for _ in range(self._MAX_FLOOD_RETRIES):
+            try:
+                await self._bot.send_message(telegram_id, text, parse_mode="HTML")
+                return True, None
+            except TelegramRetryAfter as exc:
+                logger.warning(
+                    "telegram_flood_wait",
+                    telegram_id=telegram_id,
+                    retry_after=exc.retry_after,
+                )
+                await asyncio.sleep(exc.retry_after + 1)
+                continue
+            except TelegramAPIError as exc:
+                return False, str(exc)
+            except Exception as exc:
+                return False, f"unexpected: {exc}"
+        return False, "flood_wait_retries_exhausted"
 
 
 class ReminderService:
     """Orchestrates reminder queries and delivery, logging every outcome."""
 
     def __init__(self, session: AsyncSession, bot: Bot) -> None:
+        self._session = session
         self._notif_repo = NotificationRepository(session)
         self._notif_svc = NotificationService(bot)
+
+    async def _deliver_isolated(self, reservation: Reservation, deliver) -> bool:
+        """Run one reminder delivery in isolation from the rest of the batch.
+
+        Each ``_deliver_*`` commits its own dedup log (see :meth:`_log_and_send`),
+        so a crash or error mid-batch can re-deliver at most the single in-flight
+        reminder — never the whole batch. A failure here is rolled back and the
+        loop continues with the next reservation.
+        """
+        try:
+            return await deliver(reservation)
+        except Exception as exc:
+            await self._session.rollback()
+            logger.error(
+                "reminder_item_failed",
+                reservation_id=str(reservation.id),
+                error=str(exc),
+            )
+            return False
 
     async def send_same_day_reminders(self) -> int:
         """Send 12 PM same-day reminders. Returns count of successfully delivered messages."""
@@ -47,8 +87,7 @@ class ReminderService:
 
         sent = 0
         for reservation in reservations:
-            ok = await self._deliver_same_day(reservation)
-            if ok:
+            if await self._deliver_isolated(reservation, self._deliver_same_day):
                 sent += 1
 
         return sent
@@ -67,8 +106,7 @@ class ReminderService:
 
         sent = 0
         for reservation in reservations:
-            ok = await self._deliver_pre_session(reservation)
-            if ok:
+            if await self._deliver_isolated(reservation, self._deliver_pre_session):
                 sent += 1
 
         return sent
@@ -88,8 +126,7 @@ class ReminderService:
 
         sent = 0
         for reservation in reservations:
-            ok = await self._deliver_final(reservation)
-            if ok:
+            if await self._deliver_isolated(reservation, self._deliver_final):
                 sent += 1
 
         return sent
@@ -171,6 +208,11 @@ class ReminderService:
             status=status,
             error_message=error,
         )
+        # Persist this reminder's dedup log immediately. Committing per-item (not
+        # once at the end of the batch) means a mid-batch crash / job kill can
+        # re-deliver at most this single reminder on the next tick, instead of
+        # rolling back every already-SENT row and re-sending the whole batch.
+        await self._session.commit()
 
         if success:
             logger.info(

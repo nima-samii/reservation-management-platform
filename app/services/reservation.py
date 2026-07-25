@@ -202,8 +202,16 @@ class ReservationService:
         if is_same_day_cutoff_passed(slot_local_date, now, settings.SAME_DAY_CANCEL_CUTOFF_HOUR):
             raise CancellationCutoffError(settings.SAME_DAY_CANCEL_CUTOFF_HOUR)
 
-        await self._mark_cancelled(reservation)
-        await self._res_repo.save(reservation)
+        # Atomic race guard: only the winner of a concurrent cancel proceeds, so
+        # a double-tapped confirm button (or a user cancel racing an admin
+        # cancel) can never deduct the score twice or free the slot twice.
+        won = await self._res_repo.transition_active_to_cancelled(reservation_id)
+        if not won:
+            raise ValueError("This reservation has already been cancelled.")
+
+        reservation.status = ReservationStatus.CANCELLED
+        reservation.slot.is_booked = False
+        await self._slot_repo.save(reservation.slot)
 
         tx = await self._score_svc.rollback_cancellation(user.id, reservation_id)
         enqueue_score_notification(tx.id, tx.transaction_type)
@@ -213,17 +221,6 @@ class ReservationService:
             user_id=str(user.id),
             reservation_id=str(reservation_id),
         )
-
-    async def _mark_cancelled(self, reservation: Reservation) -> None:
-        """Flip an ACTIVE reservation to CANCELLED and free its slot.
-
-        Shared by user-initiated and admin-initiated cancellation. The caller is
-        responsible for persisting the reservation row (and any actor metadata)
-        and for any score side-effects.
-        """
-        reservation.status = ReservationStatus.CANCELLED
-        reservation.slot.is_booked = False
-        await self._slot_repo.save(reservation.slot)
 
     async def admin_cancel_reservation(
         self,
@@ -246,11 +243,28 @@ class ReservationService:
         if reservation.status != ReservationStatus.ACTIVE:
             raise ReservationNotCancellableError(reservation.status)
 
-        await self._mark_cancelled(reservation)
+        # Atomic race guard: fold the status flip and the actor metadata into a
+        # single conditional UPDATE. If we lose the race to a concurrent cancel
+        # or to the lifecycle-completion job (which turns a just-passed slot to
+        # COMPLETED), rowcount is 0 and we must not roll back the score again.
+        cancelled_at = self._now_tz()
+        won = await self._res_repo.transition_active_to_cancelled(
+            reservation_id,
+            cancelled_by=actor,
+            cancelled_at=cancelled_at,
+            cancellation_reason=reason,
+        )
+        if not won:
+            raise ReservationNotCancellableError(reservation.status)
+
+        # Reflect the committed change on the in-memory instance for the response
+        # and free the slot.
+        reservation.status = ReservationStatus.CANCELLED
         reservation.cancelled_by = actor
-        reservation.cancelled_at = self._now_tz()
+        reservation.cancelled_at = cancelled_at
         reservation.cancellation_reason = reason
-        await self._res_repo.save(reservation)
+        reservation.slot.is_booked = False
+        await self._slot_repo.save(reservation.slot)
 
         # Roll back the +1 earned at booking. The dedicated cancellation DM
         # below already informs the user, so we deliberately do NOT raise a

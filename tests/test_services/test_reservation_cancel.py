@@ -54,8 +54,32 @@ async def test_active_reservation_is_cancelled(service):
     assert result.cancelled_by == "admin"
     assert result.cancellation_reason == "duplicate booking"
     assert result.cancelled_at is not None
-    service._res_repo.save.assert_awaited_once()
+    # The status flip + actor metadata now go through the atomic race guard.
+    service._res_repo.transition_active_to_cancelled.assert_awaited_once()
+    kwargs = service._res_repo.transition_active_to_cancelled.await_args.kwargs
+    assert kwargs["cancelled_by"] == "admin"
+    assert kwargs["cancellation_reason"] == "duplicate booking"
     enqueue.assert_called_once_with(res.id, "duplicate booking")
+
+
+@pytest.mark.asyncio
+async def test_lost_cancel_race_does_not_double_rollback(service):
+    """If a concurrent cancel (or the lifecycle-completion job) wins the atomic
+    transition first, this caller gets rowcount 0 and must NOT roll the score
+    back a second time nor enqueue a duplicate DM — the double-deduction bug."""
+    res = _make_reservation()
+    service._res_repo.get_reservation_admin_detail = AsyncMock(return_value=res)
+    service._res_repo.transition_active_to_cancelled = AsyncMock(return_value=False)
+
+    with patch(
+        "app.services.reservation.enqueue_reservation_cancellation_notification"
+    ) as enqueue, patch("app.services.reservation.enqueue_score_notification"):
+        with pytest.raises(ReservationNotCancellableError):
+            await service.admin_cancel_reservation(res.id, actor="admin", reason="x")
+
+    service._score_svc.rollback_cancellation.assert_not_called()
+    service._slot_repo.save.assert_not_called()
+    enqueue.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -97,7 +121,7 @@ async def test_already_cancelled_is_rejected(service):
         with pytest.raises(ReservationNotCancellableError):
             await service.admin_cancel_reservation(res.id, actor="admin")
 
-    service._res_repo.save.assert_not_called()
+    service._res_repo.transition_active_to_cancelled.assert_not_called()
     enqueue.assert_not_called()
 
 
@@ -109,7 +133,7 @@ async def test_completed_cannot_be_cancelled(service):
     with pytest.raises(ReservationNotCancellableError):
         await service.admin_cancel_reservation(res.id, actor="admin")
 
-    service._res_repo.save.assert_not_called()
+    service._res_repo.transition_active_to_cancelled.assert_not_called()
 
 
 @pytest.mark.asyncio

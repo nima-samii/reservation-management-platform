@@ -15,7 +15,11 @@ import asyncio
 import uuid
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -174,6 +178,61 @@ class UserBroadcastService:
                 parse_mode=parse_mode,
             )
 
+    #: How many times to honor a Telegram flood-wait (429) for one recipient
+    #: before giving up on that recipient.
+    _MAX_FLOOD_RETRIES = 5
+
+    async def _deliver_one(
+        self, broadcast: UserBroadcast, recipient, parse_mode
+    ) -> str:
+        """Deliver to a single recipient, honoring Telegram flood-control.
+
+        Returns one of ``"sent"`` / ``"blocked"`` / ``"failed"``. On
+        ``TelegramRetryAfter`` (HTTP 429) the delivery loop backs off for the
+        server-mandated interval and retries the SAME recipient — the recipient
+        row is left untouched (still PENDING) during the wait, so a flood wait
+        never falsely marks recipients FAILED and never drops their message.
+        Because ``get_pending`` only re-selects PENDING rows, mishandling this
+        previously meant flood-hit users were silently never delivered to.
+        """
+        for attempt in range(1, self._MAX_FLOOD_RETRIES + 1):
+            try:
+                await self._send_one(broadcast, recipient.telegram_id, parse_mode)
+                await self._recipient_repo.mark_sent(recipient.id)
+                return "sent"
+            except TelegramRetryAfter as exc:
+                logger.warning(
+                    "user_broadcast_flood_wait",
+                    broadcast_id=str(broadcast.id),
+                    retry_after=exc.retry_after,
+                    attempt=attempt,
+                )
+                await asyncio.sleep(exc.retry_after + 1)
+                continue
+            except TelegramForbiddenError as exc:
+                await self._recipient_repo.mark_blocked(recipient.id, str(exc))
+                await self._user_repo.mark_bot_blocked(recipient.user_id)
+                await self._session.commit()
+                return "blocked"
+            except TelegramAPIError as exc:
+                await self._recipient_repo.mark_failed(recipient.id, str(exc))
+                return "failed"
+            except Exception as exc:  # never let one recipient kill the run
+                await self._recipient_repo.mark_failed(recipient.id, str(exc))
+                logger.warning(
+                    "user_broadcast_unexpected_error",
+                    broadcast_id=str(broadcast.id),
+                    error=str(exc),
+                )
+                return "failed"
+
+        # Telegram kept asking us to wait beyond our retry budget — record it so
+        # the recipient isn't stuck PENDING forever, and move on.
+        await self._recipient_repo.mark_failed(
+            recipient.id, "flood_wait_retries_exhausted"
+        )
+        return "failed"
+
     async def run_broadcast(self, broadcast_id: uuid.UUID) -> None:
         """Deliver a runnable broadcast. Scheduled broadcasts are snapshotted
         here (fresh audience). Only PENDING rows are re-sent on resume."""
@@ -208,26 +267,13 @@ class UserBroadcastService:
         try:
             pending = await self._recipient_repo.get_pending(broadcast_id)
             for i, recipient in enumerate(pending, start=1):
-                try:
-                    await self._send_one(broadcast, recipient.telegram_id, parse_mode)
-                    await self._recipient_repo.mark_sent(recipient.id)
+                outcome = await self._deliver_one(broadcast, recipient, parse_mode)
+                if outcome == "sent":
                     success += 1
-                except TelegramForbiddenError as exc:
-                    await self._recipient_repo.mark_blocked(recipient.id, str(exc))
-                    await self._user_repo.mark_bot_blocked(recipient.user_id)
-                    await self._session.commit()
+                elif outcome == "blocked":
                     blocked += 1
-                except TelegramAPIError as exc:
-                    await self._recipient_repo.mark_failed(recipient.id, str(exc))
+                else:
                     failed += 1
-                except Exception as exc:  # never let one recipient kill the run
-                    await self._recipient_repo.mark_failed(recipient.id, str(exc))
-                    failed += 1
-                    logger.warning(
-                        "user_broadcast_unexpected_error",
-                        broadcast_id=str(broadcast_id),
-                        error=str(exc),
-                    )
 
                 if i % persist_every == 0:
                     await self._broadcast_repo.update_counts(
