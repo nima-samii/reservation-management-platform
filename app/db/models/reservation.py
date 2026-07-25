@@ -1,7 +1,8 @@
 import uuid
+from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -10,15 +11,32 @@ from app.db.base import Base, TimestampMixin, UUIDMixin
 
 class ReservationStatus(str, Enum):
     ACTIVE = "active"
-    CANCELLED = "cancelled"
     COMPLETED = "completed"
-    NO_SHOW = "no_show"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 class Reservation(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "reservations"
     __table_args__ = (
-        UniqueConstraint("slot_id", name="uq_reservations_slot"),
+        # Partial unique index: only one ACTIVE reservation per slot.
+        # Cancelled/completed rows don't block re-booking the same slot.
+        Index(
+            "uq_reservations_slot_active",
+            "slot_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+        # Composite index for the "my active reservations" lookup (migration 0004).
+        # Declared here (not via a bare column index=True) so its name matches the
+        # index that actually exists in the database.
+        Index("ix_reservations_user_status", "user_id", "status"),
+        # Partial index backing lifecycle transitions on active rows (migration 0004).
+        Index(
+            "ix_reservations_active_slot",
+            "slot_id",
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -45,6 +63,14 @@ class Reservation(Base, UUIDMixin, TimestampMixin):
         index=True,
     )
     notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # Set when an admin cancels the reservation from the admin panel (Sprint 1).
+    # User-initiated cancellations leave these NULL.
+    cancelled_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     user: Mapped["User"] = relationship("User", back_populates="reservations")  # noqa: F821
     slot: Mapped["ReservationSlot"] = relationship(  # noqa: F821

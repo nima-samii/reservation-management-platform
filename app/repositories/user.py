@@ -1,7 +1,9 @@
 import random
 import string
+import uuid
+from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -35,6 +37,89 @@ class UserRepository(BaseRepository[User]):
             code = "".join(random.choices(string.digits, k=6))
             if not await self.first_by(public_user_code=code):
                 return code
+
+    async def mark_bot_blocked(self, user_id: uuid.UUID) -> None:
+        """Flag a user as having blocked the bot so future broadcasts skip them."""
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(bot_blocked=True)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(stmt)
+
+    async def apply_score_delta(self, user_id: uuid.UUID, delta: int) -> None:
+        """Atomically increment or decrement participation_score without a read-modify-write."""
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(participation_score=User.participation_score + delta)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(stmt)
+
+    async def set_last_reservation_at(self, user_id: uuid.UUID, when: datetime) -> None:
+        """Refresh the inactivity-reminder reset anchor. Call only on a
+        successful reservation create — never on cancellation."""
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(last_reservation_at=when)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(stmt)
+
+    async def mark_inactivity_reminder_sent(self, user_id: uuid.UUID, when: datetime) -> None:
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(last_inactivity_reminder_sent_at=when)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(stmt)
+
+    async def get_inactivity_reminder_candidates(
+        self,
+        *,
+        now: datetime,
+        threshold_days: int,
+        after_id: uuid.UUID | None,
+        limit: int,
+    ) -> list[tuple[uuid.UUID, int]]:
+        """Users overdue for an inactivity reminder, keyset-paginated by id.
+
+        Loads only (id, telegram_id) — never a full User row — since the scan
+        can span the whole table. Eligibility is expressed as an explicit
+        "next due" date (``anchor + threshold_days``) rather than shifting
+        ``now`` back by the threshold and comparing timestamps directly —
+        same result, but reads as the actual business rule: a reminder is due
+        once ``threshold_days`` have passed since the anchor (the last
+        reservation, or the last reminder if that's later). A fresh
+        reservation always resets the cycle regardless of any past reminder.
+        """
+        cycle = timedelta(days=threshold_days)
+        conditions = [
+            User.last_reservation_at.isnot(None),
+            User.last_reservation_at + cycle <= now,
+            User.is_banned.is_(False),
+            User.bot_blocked.is_(False),
+            or_(
+                User.last_inactivity_reminder_sent_at.is_(None),
+                User.last_inactivity_reminder_sent_at <= User.last_reservation_at,
+                User.last_inactivity_reminder_sent_at + cycle <= now,
+            ),
+        ]
+        if after_id is not None:
+            conditions.append(User.id > after_id)
+
+        stmt = (
+            select(User.id, User.telegram_id)
+            .where(and_(*conditions))
+            .order_by(User.id)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return [(row.id, row.telegram_id) for row in result.all()]
 
     async def create(
         self,

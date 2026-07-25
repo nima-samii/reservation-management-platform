@@ -1,8 +1,5 @@
-from datetime import date
-
 import pytz
-from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.config import settings
 from app.db.models.slot import ReservationSlot
@@ -10,20 +7,39 @@ from app.db.models.slot import ReservationSlot
 TZ = pytz.timezone(settings.TIMEZONE)
 
 
-def build_slot_keyboard(
-    slots: list[ReservationSlot], selected_date: date
+def _time_label(slot: ReservationSlot) -> str:
+    return slot.slot_datetime.astimezone(TZ).strftime("%I:%M %p")
+
+
+def _chunk(lst: list, size: int) -> list[list]:
+    return [lst[i : i + size] for i in range(0, len(lst), size)]
+
+
+def build_slot_keyboard_grouped(
+    recommended: list[ReservationSlot],
+    more_available: list[ReservationSlot],
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows: list[list[InlineKeyboardButton]] = []
 
-    for slot in slots:
-        local_dt = slot.slot_datetime.astimezone(TZ)
-        label = local_dt.strftime("%I:%M %p")
-        builder.button(
-            text=label,
-            callback_data=f"slot:{slot.id}",
-        )
+    if recommended:
+        rows.append([InlineKeyboardButton(text="📌 Recommended Slots", callback_data="section:recommended")])
+        for chunk in _chunk(recommended, 3):
+            rows.append([
+                InlineKeyboardButton(text=_time_label(s), callback_data=f"slot:{s.id}")
+                for s in chunk
+            ])
 
-    builder.button(text="⬅️ Back", callback_data="reservation:back_to_dates")
-    builder.button(text="❌ Cancel", callback_data="reservation:cancel")
-    builder.adjust(3)
-    return builder.as_markup()
+    if more_available:
+        rows.append([InlineKeyboardButton(text="➕ More Available Slots", callback_data="section:more")])
+        for chunk in _chunk(more_available, 3):
+            rows.append([
+                InlineKeyboardButton(text=_time_label(s), callback_data=f"slot:{s.id}")
+                for s in chunk
+            ])
+
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Back", callback_data="reservation:back_to_dates"),
+        InlineKeyboardButton(text="❌ Cancel", callback_data="reservation:cancel"),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)

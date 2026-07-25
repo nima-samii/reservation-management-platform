@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Build context for docker/Dockerfile (the Python backend image).
+# Its build context is the repo root, and the Dockerfile does `COPY . .`, so
+# anything not excluded here is baked into the image. Keep this list tight:
+#   - SECURITY: secrets (.env), git history, and local venvs must never ship.
+#   - SIZE: the Next.js admin panel, node_modules, caches, and data are huge and
+#     the backend image does not need them.
+# What the backend runtime DOES need (do NOT ignore): app/, migrations/,
+# alembic.ini, requirements.txt, docker/, main_polling.py, scripts/, pyproject.toml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Secrets & environment ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Version control ──
+.git
+.gitignore
+.gitattributes
+
+# ── Python virtualenvs (local, wrong platform/version for the image) ──
+.venv/
+venv/
+
+# ── Python caches / build artifacts ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# ── The admin panel is a SEPARATE image (admin-panel/Dockerfile); the ──
+# ── backend does not need any of it, least of all its node_modules. ──
+admin-panel/
+
+# ── Runtime data (bind-mounted at ./data:/app/data; never bake it in) ──
+data/
+
+# ── Tests (not needed in the production image) ──
+tests/
+
+# ── Docs & scratch files ──
+*.md
+!README.md
+adminpanel.md
+ADMIN_SETTINGS_AUDIT.md
+setup-guild.txt
+test-phases.txt
+
+# ── Logs & editor/OS cruft ──
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── Other compose files not part of this image build ──
+docker-compose.dev.yml
+docker-compose.admin.yml

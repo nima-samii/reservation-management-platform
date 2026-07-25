@@ -1,0 +1,30 @@
+📅 <b>Live Sessions Today</b>
+<i>{{ channel_name }}  •  {{ date_str }}</i>
+🌍 <i>Asia/Baghdad</i>
+
+━━━━━━━━━━━━━━━━━━━━━
+{% if entries %}
+{% for entry in entries %}
+
+{{ entry.clock }} <b>{{ entry.time }}</b>
+{{ entry.gender_emoji }} {{ entry.country_display }}  │  ID: <code>{{ entry.user_code }}</code>  │  ⭐ {{ entry.score }}
+{% endfor %}
+
+{% else %}
+
+<i>No sessions are scheduled for today.</i>
+
+{% endif %}
+━━━━━━━━━━━━━━━━━━━━━
+{% for event in events %}
+
+🕌 <b>{{ event.title }}</b>
+
+━━━━━━━━━━━━━━━━━━━━━
+{% endfor %}
+
+📌 <b>Reserve your session</b> via the bot.
+{% if invite_link %}
+
+📺 <a href="{{ invite_link }}">{{ channel_name }}</a>
+{% endif %}

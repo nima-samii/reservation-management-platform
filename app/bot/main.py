@@ -3,9 +3,18 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
 
-from app.bot.handlers import help, my_reservations, profile, registration, reservation, start
+from app.bot.handlers import (
+    help,
+    membership,
+    my_reservations,
+    profile,
+    registration,
+    reservation,
+    start,
+)
 from app.bot.middlewares.anti_flood import AntiFloodMiddleware
 from app.bot.middlewares.db_session import DbSessionMiddleware
+from app.bot.middlewares.membership import MembershipMiddleware
 from app.bot.middlewares.rate_limit import RateLimitMiddleware
 from app.bot.middlewares.user_context import UserContextMiddleware
 from app.cache.client import redis_client
@@ -31,8 +40,10 @@ def create_dispatcher() -> Dispatcher:
     dp.update.outer_middleware(RateLimitMiddleware())
     dp.update.outer_middleware(DbSessionMiddleware())
     dp.update.outer_middleware(UserContextMiddleware())
+    dp.update.outer_middleware(MembershipMiddleware())
 
     # ── Routers ────────────────────────────────────────────────────────────
+    dp.include_router(membership.router)
     dp.include_router(start.router)
     dp.include_router(registration.router)
     dp.include_router(reservation.router)

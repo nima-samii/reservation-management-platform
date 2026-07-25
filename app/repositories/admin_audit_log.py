@@ -1,3 +1,4 @@
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.admin_audit_log import AdminAuditLog
@@ -26,3 +27,21 @@ class AdminAuditLogRepository(BaseRepository[AdminAuditLog]):
             ip_address=ip_address,
         )
         return await self.save(entry)
+
+    async def get_for_entity(
+        self, entity_type: str, entity_id: str
+    ) -> list[AdminAuditLog]:
+        """All audit rows for one entity, oldest first.
+
+        Read-only — used by the reservation timeline builder to attribute
+        admin-driven events (creation, no-show) to an operator."""
+        stmt = (
+            select(AdminAuditLog)
+            .where(
+                AdminAuditLog.entity_type == entity_type,
+                AdminAuditLog.entity_id == entity_id,
+            )
+            .order_by(AdminAuditLog.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())

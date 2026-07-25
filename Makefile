@@ -86,20 +86,20 @@ logs-all: ## Follow ALL service logs
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  DOCKER — ADMIN PANEL (Next.js on port 3000)
+#  DOCKER — ADMIN PANEL (Next.js behind nginx, exposed on port 80)
 # ══════════════════════════════════════════════════════════════════════════════
 
-admin-up: ## Build and start admin panel
+admin-up: ## Build and start admin panel + nginx
 	$(DC_ADMIN) up --build -d
 
-admin-down: ## Stop admin panel
+admin-down: ## Stop admin panel + nginx
 	$(DC_ADMIN) down
 
 admin-rebuild: ## Force-rebuild admin panel (clears Docker cache)
 	$(DC_ADMIN) build --no-cache
 	$(DC_ADMIN) up -d
 
-admin-logs: ## Follow admin panel logs
+admin-logs: ## Follow admin panel + nginx logs
 	$(DC_ADMIN) logs -f
 
 

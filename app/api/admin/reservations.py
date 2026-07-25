@@ -14,6 +14,8 @@ from starlette.requests import Request
 
 from app.api.admin.deps import get_current_admin
 from app.api.admin.schemas.reservations import (
+    CancelReservationBody,
+    CreateReservationBody,
     DaySummary,
     NoShowResponse,
     PaginatedReservations,
@@ -24,12 +26,27 @@ from app.api.admin.schemas.reservations import (
     UserInfo,
     CountryInfo,
 )
+from app.cache.client import redis_client
 from app.core.config import settings
+from app.core.exceptions import (
+    DailyLimitError,
+    MaxReservationsError,
+    NotFoundError,
+    PastSlotError,
+    ReservationNotCancellableError,
+    SameDayCutoffError,
+    SlotUnavailableError,
+    UserBannedError,
+)
 from app.core.logging import get_logger
 from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.session import get_db_session
 from app.repositories.admin_audit_log import AdminAuditLogRepository
 from app.repositories.reservation import ReservationRepository, _parse_notes
+from app.repositories.slot import SlotRepository
+from app.schedulers.jobs.score_notification import enqueue_score_notification
+from app.services.reservation import ReservationService
+from app.services.reservation_timeline import ReservationTimelineService, TimelineEvent
 from app.services.score import ParticipationScoreService
 
 router = APIRouter(tags=["admin-reservations"])
@@ -175,6 +192,38 @@ async def export_reservations(
     )
 
 
+# ── GET /available-slots must be declared BEFORE /{reservation_id} ────────────
+
+@router.get("/available-slots", response_model=list[SlotInfo])
+async def list_available_slots(
+    channel_id: uuid.UUID = Query(...),
+    date_param: date = Query(..., alias="date"),
+    session: AsyncSession = Depends(get_db_session),
+    _admin: str = Depends(get_current_admin),
+) -> list[SlotInfo]:
+    """Open (un-booked, future) slots for a channel on a date — for the admin
+    Create-Reservation slot picker.
+
+    Unlike the user-facing flow this is NOT subject to the channel-unlock
+    capacity threshold: an admin picks an explicit channel and should see every
+    open slot on it. The same-day cutoff is still enforced at booking time by
+    the shared booking core, so a same-day slot shown here may still be rejected
+    on submit (surfaced as a clear error)."""
+    repo = SlotRepository(session)
+    now = datetime.now(TZ)
+    slots = await repo.get_available_slots_for_date_and_channel(
+        date_param, channel_id, now
+    )
+    return [
+        SlotInfo(
+            id=slot.id,
+            slot_datetime=slot.slot_datetime,
+            slot_time_local=slot.slot_datetime.astimezone(TZ).strftime("%H:%M"),
+        )
+        for slot in slots
+    ]
+
+
 @router.get("", response_model=PaginatedReservations)
 async def list_reservations(
     date_param: Optional[date] = Query(None, alias="date"),
@@ -229,6 +278,55 @@ async def list_reservations(
     )
 
 
+@router.post("", response_model=ReservationDetail, status_code=status.HTTP_201_CREATED)
+async def create_reservation(
+    body: CreateReservationBody,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    admin: str = Depends(get_current_admin),
+) -> ReservationDetail:
+    """Admin-create a reservation for an existing user.
+
+    Goes through the same booking core as user booking — identical validation
+    (daily limit, max active, double-booking, past-slot, same-day cutoff) and
+    the standard +1 score reward. Banned users are rejected. A confirmation DM
+    is sent to the user out-of-band after this request commits.
+    """
+    svc = ReservationService(session, redis_client)
+    try:
+        reservation = await svc.admin_create_reservation(
+            user_id=body.user_id, slot_id=body.slot_id, actor=admin
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+    except UserBannedError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
+    except (DailyLimitError, MaxReservationsError, SlotUnavailableError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
+    except (PastSlotError, SameDayCutoffError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
+
+    audit_repo = AdminAuditLogRepository(session)
+    ip = request.client.host if request.client else None
+    await audit_repo.log(
+        action="reservation_created_by_admin",
+        admin_username=admin,
+        entity_type="reservation",
+        entity_id=str(reservation.id),
+        details=f"user_id={body.user_id} slot_id={body.slot_id}",
+        ip_address=ip,
+    )
+    logger.info(
+        "admin_reservation_created",
+        reservation_id=str(reservation.id),
+        admin=admin,
+    )
+
+    # Re-load with country eager-loaded so the detail response serializes cleanly.
+    detail = await ReservationRepository(session).get_reservation_admin_detail(reservation.id)
+    return ReservationDetail(**_to_item(detail or reservation).model_dump())
+
+
 @router.get("/{reservation_id}", response_model=ReservationDetail)
 async def get_reservation(
     reservation_id: uuid.UUID,
@@ -240,6 +338,69 @@ async def get_reservation(
     if not res:
         raise _not_found()
     return ReservationDetail(**_to_item(res).model_dump())
+
+
+@router.get("/{reservation_id}/timeline", response_model=list[TimelineEvent])
+async def get_reservation_timeline(
+    reservation_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+    _admin: str = Depends(get_current_admin),
+) -> list[TimelineEvent]:
+    """Read-only chronological timeline for a reservation, oldest first.
+
+    Built on the fly from existing data (reservation, score ledger,
+    notification logs, admin audit logs) — no timeline persistence. Returns an
+    empty array when the reservation has no derivable events beyond creation.
+    """
+    svc = ReservationTimelineService(session)
+    try:
+        return await svc.build(reservation_id)
+    except NotFoundError:
+        raise _not_found()
+
+
+@router.post("/{reservation_id}/cancel", response_model=ReservationDetail)
+async def cancel_reservation(
+    reservation_id: uuid.UUID,
+    body: CancelReservationBody,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    admin: str = Depends(get_current_admin),
+) -> ReservationDetail:
+    """Admin-cancel an ACTIVE reservation, audit the action, and notify the user.
+
+    No score penalty is applied (operational action). The user DM is sent
+    out-of-band after this request commits and cannot roll the cancellation back.
+    """
+    svc = ReservationService(session, redis_client)
+    try:
+        res = await svc.admin_cancel_reservation(
+            reservation_id, actor=admin, reason=body.reason
+        )
+    except NotFoundError:
+        raise _not_found()
+    except ReservationNotCancellableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
+
+    audit_repo = AdminAuditLogRepository(session)
+    ip = request.client.host if request.client else None
+    await audit_repo.log(
+        action="reservation_cancelled_by_admin",
+        admin_username=admin,
+        entity_type="reservation",
+        entity_id=str(reservation_id),
+        details=f"reason={body.reason!r}",
+        ip_address=ip,
+    )
+    logger.info(
+        "admin_reservation_cancelled",
+        reservation_id=str(reservation_id),
+        admin=admin,
+    )
+
+    # Re-load with country eager-loaded so the detail response serializes cleanly.
+    detail = await ReservationRepository(session).get_reservation_admin_detail(reservation_id)
+    return ReservationDetail(**_to_item(detail or res).model_dump())
 
 
 @router.post("/{reservation_id}/no-show", response_model=NoShowResponse)
@@ -300,6 +461,9 @@ async def mark_no_show(
         user_id=str(res.user_id),
         admin=admin,
     )
+
+    # Out-of-band DM (delayed job runs after this request's commit lands).
+    enqueue_score_notification(tx.id, tx.transaction_type)
 
     return NoShowResponse(
         reservation_id=res.id,

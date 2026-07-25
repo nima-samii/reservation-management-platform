@@ -3,6 +3,7 @@
 import Link from "next/link";
 import type { ReservationItem } from "@/lib/api/reservations";
 import { NoShowButton } from "./NoShowButton";
+import { CancelButton } from "./CancelButton";
 
 interface Props {
   items: ReservationItem[];
@@ -70,8 +71,14 @@ export function ReservationTable({ items, isLoading, queryKey }: Props) {
 
                 return (
                   <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-900/50">
-                    <td className="px-3 py-2.5 font-mono text-gray-200 whitespace-nowrap">
-                      {item.slot.slot_time_local}
+                    <td className="px-3 py-2.5 font-mono whitespace-nowrap">
+                      <Link
+                        href={`/reservations/${item.id}`}
+                        className="text-gray-200 hover:text-indigo-400 transition-colors"
+                        title="View reservation timeline"
+                      >
+                        {item.slot.slot_time_local}
+                      </Link>
                     </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
                       <span className="px-2 py-0.5 rounded bg-indigo-950 text-indigo-400 border border-indigo-900 text-xs">
@@ -106,13 +113,16 @@ export function ReservationTable({ items, isLoading, queryKey }: Props) {
                       <NoShowButton reservation={item} queryKey={queryKey} />
                     </td>
                     <td className="px-3 py-2.5">
-                      <Link
-                        href={`/users/${item.user.id}`}
-                        className="text-gray-500 hover:text-indigo-400 transition-colors"
-                        title="View user"
-                      >
-                        👁
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <CancelButton reservation={item} queryKey={queryKey} />
+                        <Link
+                          href={`/users/${item.user.id}`}
+                          className="text-gray-500 hover:text-indigo-400 transition-colors"
+                          title="View user"
+                        >
+                          👁
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 );

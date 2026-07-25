@@ -55,9 +55,40 @@ class PastSlotError(ReservationError):
         super().__init__("Cannot reserve a slot in the past.")
 
 
+class SameDayCutoffError(ReservationError):
+    def __init__(self, cutoff_hour: int = 12) -> None:
+        super().__init__(
+            f"Same-day reservations are closed after {cutoff_hour:02d}:00."
+        )
+
+
+class CancellationCutoffError(ReservationError):
+    def __init__(self, cutoff_hour: int = 12) -> None:
+        super().__init__(
+            f"Same-day cancellations are closed after {cutoff_hour:02d}:00."
+        )
+
+
+class ReservationNotCancellableError(ReservationError):
+    """Raised when a cancellation is attempted on a non-ACTIVE reservation."""
+
+    def __init__(self, current_status: str) -> None:
+        super().__init__(
+            f"Only active reservations can be cancelled (current status: {current_status})."
+        )
+        self.current_status = current_status
+
+
 class NoChannelAvailableError(ReservationError):
     def __init__(self) -> None:
         super().__init__("No channels are currently available for reservations.")
+
+
+class UserBannedError(ReservationError):
+    """Raised when a reservation is attempted for a banned user."""
+
+    def __init__(self) -> None:
+        super().__init__("Cannot create a reservation for a banned user.")
 
 
 class RateLimitError(AppError):

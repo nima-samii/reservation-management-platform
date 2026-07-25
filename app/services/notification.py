@@ -1,0 +1,233 @@
+import asyncio
+from datetime import datetime, timedelta
+
+import pytz
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.logging import get_logger
+from app.db.models.notification_log import DeliveryStatus, ReminderType
+from app.db.models.reservation import Reservation
+from app.repositories.notification import NotificationRepository
+
+logger = get_logger(__name__)
+
+TZ = pytz.timezone(settings.TIMEZONE)
+
+
+class NotificationService:
+    """Low-level Telegram message sender with error isolation."""
+
+    def __init__(self, bot: Bot) -> None:
+        self._bot = bot
+
+    #: How many times to honor a Telegram flood-wait (429) before giving up.
+    _MAX_FLOOD_RETRIES = 3
+
+    async def send(self, telegram_id: int, text: str) -> tuple[bool, str | None]:
+        """Send a message. Returns (success, error_message).
+
+        On ``TelegramRetryAfter`` (HTTP 429 flood control) the send waits the
+        server-mandated interval and retries, so a rate-limit hit does not turn
+        into a false FAILED (which for a single-attempt same-day reminder would
+        drop the message entirely). Other Telegram errors fail fast as before.
+        """
+        for _ in range(self._MAX_FLOOD_RETRIES):
+            try:
+                await self._bot.send_message(telegram_id, text, parse_mode="HTML")
+                return True, None
+            except TelegramRetryAfter as exc:
+                logger.warning(
+                    "telegram_flood_wait",
+                    telegram_id=telegram_id,
+                    retry_after=exc.retry_after,
+                )
+                await asyncio.sleep(exc.retry_after + 1)
+                continue
+            except TelegramAPIError as exc:
+                return False, str(exc)
+            except Exception as exc:
+                return False, f"unexpected: {exc}"
+        return False, "flood_wait_retries_exhausted"
+
+
+class ReminderService:
+    """Orchestrates reminder queries and delivery, logging every outcome."""
+
+    def __init__(self, session: AsyncSession, bot: Bot) -> None:
+        self._session = session
+        self._notif_repo = NotificationRepository(session)
+        self._notif_svc = NotificationService(bot)
+
+    async def _deliver_isolated(self, reservation: Reservation, deliver) -> bool:
+        """Run one reminder delivery in isolation from the rest of the batch.
+
+        Each ``_deliver_*`` commits its own dedup log (see :meth:`_log_and_send`),
+        so a crash or error mid-batch can re-deliver at most the single in-flight
+        reminder — never the whole batch. A failure here is rolled back and the
+        loop continues with the next reservation.
+        """
+        try:
+            return await deliver(reservation)
+        except Exception as exc:
+            await self._session.rollback()
+            logger.error(
+                "reminder_item_failed",
+                reservation_id=str(reservation.id),
+                error=str(exc),
+            )
+            return False
+
+    async def send_same_day_reminders(self) -> int:
+        """Send 12 PM same-day reminders. Returns count of successfully delivered messages."""
+        today = datetime.now(TZ).date()
+        reservations = await self._notif_repo.get_reservations_for_same_day_reminder(today)
+
+        sent = 0
+        for reservation in reservations:
+            if await self._deliver_isolated(reservation, self._deliver_same_day):
+                sent += 1
+
+        return sent
+
+    async def send_pre_session_reminders(self) -> int:
+        """Send pre-session reminders. Checks a ±5-minute window around the configured
+        PRE_SESSION_REMINDER_MINUTES mark to tolerate scheduler jitter."""
+        now = datetime.now(TZ)
+        window = settings.PRE_SESSION_REMINDER_MINUTES
+        from_dt = now + timedelta(minutes=window - 5)
+        to_dt = now + timedelta(minutes=window + 5)
+
+        reservations = await self._notif_repo.get_reservations_for_window_reminder(
+            ReminderType.PRE_SESSION, from_dt, to_dt
+        )
+
+        sent = 0
+        for reservation in reservations:
+            if await self._deliver_isolated(reservation, self._deliver_pre_session):
+                sent += 1
+
+        return sent
+
+    async def send_final_reminders(self) -> int:
+        """Send the final "join now" reminder. Uses a forward-only window
+        [now, now + FINAL_REMINDER_MINUTES): a session is reminded on the first
+        tick it comes within FINAL_REMINDER_MINUTES of starting, and never before,
+        so this reminder can never fire early."""
+        now = datetime.now(TZ)
+        from_dt = now
+        to_dt = now + timedelta(minutes=settings.FINAL_REMINDER_MINUTES)
+
+        reservations = await self._notif_repo.get_reservations_for_window_reminder(
+            ReminderType.FINAL, from_dt, to_dt, upper_inclusive=False
+        )
+
+        sent = 0
+        for reservation in reservations:
+            if await self._deliver_isolated(reservation, self._deliver_final):
+                sent += 1
+
+        return sent
+
+    async def _deliver_same_day(self, reservation: Reservation) -> bool:
+        user = reservation.user
+        slot = reservation.slot
+        channel = slot.channel
+
+        slot_local = slot.slot_datetime.astimezone(TZ)
+        hour_12 = slot_local.hour % 12 or 12
+        period = "AM" if slot_local.hour < 12 else "PM"
+        time_str = f"{hour_12}:{slot_local.minute:02d} {period}"
+
+        text = (
+            f"⏰ <b>Live Session Reminder</b>\n\n"
+            f"You have a live session today at <b>{time_str}</b>.\n\n"
+            f"📺 Channel:\n{channel.name}\n"
+        )
+        if channel.invite_link:
+            text += f"\n🔗 Join Channel:\n{channel.invite_link}\n"
+        text += "\nGood luck with your presentation ✨"
+
+        return await self._log_and_send(reservation, ReminderType.SAME_DAY, user.telegram_id, text)
+
+    async def _deliver_pre_session(self, reservation: Reservation) -> bool:
+        user = reservation.user
+        slot = reservation.slot
+        channel = slot.channel
+
+        text = (
+            f"🚀 <b>Your live session starts in {settings.PRE_SESSION_REMINDER_MINUTES} minutes.</b>\n\n"
+            f"📺 Channel:\n{channel.name}\n"
+        )
+        if channel.invite_link:
+            text += f"\n🔗 Join Here:\n{channel.invite_link}\n"
+        text += "\nSee you soon ✨"
+
+        return await self._log_and_send(reservation, ReminderType.PRE_SESSION, user.telegram_id, text)
+
+    async def _deliver_final(self, reservation: Reservation) -> bool:
+        user = reservation.user
+        channel = reservation.slot.channel
+
+        if channel.invite_link:
+            join_block = (
+                "Please join the live channel using the link below.\n\n"
+                f'👉 <a href="{channel.invite_link}">Join Live Session</a>'
+            )
+        else:
+            join_block = "Please open the Telegram channel from your previous invitation."
+
+        text = (
+            "🔴 <b>Your live session is about to begin!</b>\n\n"
+            f"{join_block}\n\n"
+            "<b>Before you start:</b>\n\n"
+            "• Tap ✋ <b>Raise Hand</b> to request microphone access.\n"
+            "• Wait until the admin enables your microphone.\n"
+            "• Once enabled, tap the microphone icon and begin your session.\n\n"
+            "If the live session hasn't started yet, please wait <b>2–3 minutes</b> and try again.\n\n"
+            "Good luck! 🎤"
+        )
+
+        return await self._log_and_send(reservation, ReminderType.FINAL, user.telegram_id, text)
+
+    async def _log_and_send(
+        self,
+        reservation: Reservation,
+        reminder_type: ReminderType,
+        telegram_id: int,
+        text: str,
+    ) -> bool:
+        success, error = await self._notif_svc.send(telegram_id, text)
+        status = DeliveryStatus.SENT if success else DeliveryStatus.FAILED
+
+        await self._notif_repo.log(
+            reservation_id=reservation.id,
+            reminder_type=reminder_type,
+            status=status,
+            error_message=error,
+        )
+        # Persist this reminder's dedup log immediately. Committing per-item (not
+        # once at the end of the batch) means a mid-batch crash / job kill can
+        # re-deliver at most this single reminder on the next tick, instead of
+        # rolling back every already-SENT row and re-sending the whole batch.
+        await self._session.commit()
+
+        if success:
+            logger.info(
+                "reminder_sent",
+                reminder_type=reminder_type.value,
+                reservation_id=str(reservation.id),
+                telegram_id=telegram_id,
+            )
+        else:
+            logger.warning(
+                "reminder_failed",
+                reminder_type=reminder_type.value,
+                reservation_id=str(reservation.id),
+                telegram_id=telegram_id,
+                error=error,
+            )
+
+        return success

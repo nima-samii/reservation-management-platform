@@ -11,7 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-reservations}"]
       interval: 5s
@@ -114,20 +114,31 @@ services:
       # ── Notifications & Reminders ─────────────────────────────────
       SAME_DAY_REMINDER_HOUR: ${SAME_DAY_REMINDER_HOUR:-12}
       PRE_SESSION_REMINDER_MINUTES: ${PRE_SESSION_REMINDER_MINUTES:-30}
+      FINAL_REMINDER_ENABLED: ${FINAL_REMINDER_ENABLED:-true}
+      FINAL_REMINDER_MINUTES: ${FINAL_REMINDER_MINUTES:-5}
       # ── Daily Broadcast ───────────────────────────────────────────
       DAILY_BROADCAST_HOUR: ${DAILY_BROADCAST_HOUR:-12}
       ENABLE_BROADCAST_AUTO_PIN: ${ENABLE_BROADCAST_AUTO_PIN:-true}
       DELETE_PREVIOUS_BROADCAST: ${DELETE_PREVIOUS_BROADCAST:-false}
-      # ── Channels ──────────────────────────────────────────────────
-      CHANNEL_1_ID: ${CHANNEL_1_ID:-}
-      CHANNEL_1_NAME: ${CHANNEL_1_NAME:-}
-      CHANNEL_1_INVITE: ${CHANNEL_1_INVITE:-}
-      CHANNEL_2_ID: ${CHANNEL_2_ID:-}
-      CHANNEL_2_NAME: ${CHANNEL_2_NAME:-}
-      CHANNEL_2_INVITE: ${CHANNEL_2_INVITE:-}
-      CHANNEL_3_ID: ${CHANNEL_3_ID:-}
-      CHANNEL_3_NAME: ${CHANNEL_3_NAME:-}
-      CHANNEL_3_INVITE: ${CHANNEL_3_INVITE:-}
+      # ── Inactivity Reminder ─────────────────────────────────────────
+      INACTIVITY_REMINDER_ENABLED: ${INACTIVITY_REMINDER_ENABLED:-true}
+      INACTIVITY_REMINDER_THRESHOLD_DAYS: ${INACTIVITY_REMINDER_THRESHOLD_DAYS:-30}
+      INACTIVITY_REMINDER_HOUR: ${INACTIVITY_REMINDER_HOUR:-18}
+      # ── Mandatory Channel Membership ──────────────────────────────
+      REQUIRED_CHANNEL_1_ID: ${REQUIRED_CHANNEL_1_ID:-}
+      REQUIRED_CHANNEL_1_URL: ${REQUIRED_CHANNEL_1_URL:-}
+      REQUIRED_CHANNEL_2_ID: ${REQUIRED_CHANNEL_2_ID:-}
+      REQUIRED_CHANNEL_2_URL: ${REQUIRED_CHANNEL_2_URL:-}
+      REQUIRED_CHANNEL_3_ID: ${REQUIRED_CHANNEL_3_ID:-}
+      REQUIRED_CHANNEL_3_URL: ${REQUIRED_CHANNEL_3_URL:-}
+      REQUIRED_CHANNEL_4_ID: ${REQUIRED_CHANNEL_4_ID:-}
+      REQUIRED_CHANNEL_4_URL: ${REQUIRED_CHANNEL_4_URL:-}
+      REQUIRED_CHANNEL_5_ID: ${REQUIRED_CHANNEL_5_ID:-}
+      REQUIRED_CHANNEL_5_URL: ${REQUIRED_CHANNEL_5_URL:-}
+      MEMBERSHIP_CACHE_TTL: ${MEMBERSHIP_CACHE_TTL:-1800}
+    volumes:
+      # Persists data/admin_settings_override.json across container recreation.
+      - ./data:/app/data
     ports:
       - "8000:8000"
     depends_on:

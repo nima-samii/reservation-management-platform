@@ -1,9 +1,10 @@
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.db.models.score import ScoreTransaction, ScoreTransactionType
+from app.db.models.score import NotifyStatus, ScoreTransaction, ScoreTransactionType
 from app.repositories.base import BaseRepository
 
 
@@ -42,6 +43,55 @@ class ScoreTransactionRepository(BaseRepository[ScoreTransaction]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_for_reservation(
+        self, reservation_id: uuid.UUID
+    ) -> list[ScoreTransaction]:
+        """All score-ledger rows tied to a reservation, oldest first.
+
+        Read-only — used by the reservation timeline builder."""
+        stmt = (
+            select(ScoreTransaction)
+            .where(ScoreTransaction.reservation_id == reservation_id)
+            .order_by(ScoreTransaction.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_with_user(self, tx_id: uuid.UUID) -> ScoreTransaction | None:
+        """Load a transaction with its user eagerly loaded (for notification delivery)."""
+        stmt = (
+            select(ScoreTransaction)
+            .where(ScoreTransaction.id == tx_id)
+            .options(selectinload(ScoreTransaction.user))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def claim_for_notification(self, tx_id: uuid.UUID) -> bool:
+        """Atomically transition pending → sending. Returns True if this caller
+        won the claim (idempotency guard against double-sends across jobs/instances)."""
+        stmt = (
+            update(ScoreTransaction)
+            .where(
+                ScoreTransaction.id == tx_id,
+                ScoreTransaction.notify_status == NotifyStatus.PENDING.value,
+            )
+            .values(notify_status=NotifyStatus.SENDING.value)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return (result.rowcount or 0) > 0
+
+    async def mark_notified(self, tx_id: uuid.UUID, status: NotifyStatus) -> None:
+        """Record a terminal delivery outcome and stamp notified_at."""
+        stmt = (
+            update(ScoreTransaction)
+            .where(ScoreTransaction.id == tx_id)
+            .values(notify_status=status.value, notified_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(stmt)
 
     async def get_user_history_paginated(
         self,

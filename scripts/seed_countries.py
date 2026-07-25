@@ -1,7 +1,10 @@
 """
-Seed script: populate the countries table with ISO 3166-1 country data.
+Seed script: populate countries.
 Run once after the initial migration:
     python scripts/seed_countries.py
+
+Reservation channels are no longer seeded here — create them through the
+Admin Panel → Channels page after deployment.
 """
 import asyncio
 import sys
@@ -10,7 +13,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.db.models.country import Country
 from app.db.session import AsyncSessionFactory
@@ -211,21 +213,20 @@ COUNTRIES: list[dict] = [
 async def seed() -> None:
     import uuid
     async with AsyncSessionFactory() as session:
+        # ── Countries ──────────────────────────────────────────────────────
         for entry in COUNTRIES:
             existing = await session.execute(
                 select(Country).where(Country.code == entry["code"])
             )
             if existing.scalars().first():
                 continue
-
-            country = Country(
+            session.add(Country(
                 id=uuid.uuid4(),
                 code=entry["code"],
                 name=entry["name"],
                 flag_emoji=entry.get("flag_emoji"),
                 is_active=True,
-            )
-            session.add(country)
+            ))
 
         await session.commit()
         print(f"✅ Seeded {len(COUNTRIES)} countries.")

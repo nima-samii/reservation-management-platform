@@ -38,6 +38,13 @@ export interface ReservationItem {
 
 export type ReservationDetail = ReservationItem;
 
+export interface TimelineEvent {
+  type: string;
+  title: string;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface NoShowResponse {
   reservation_id: string;
   user_id: string;
@@ -110,6 +117,26 @@ export async function getReservation(id: string): Promise<ReservationDetail> {
   return data;
 }
 
+export async function getReservationTimeline(
+  id: string
+): Promise<TimelineEvent[]> {
+  const { data } = await api.get<TimelineEvent[]>(
+    `/admin/reservations/${id}/timeline`
+  );
+  return data;
+}
+
+export async function cancelReservation(
+  id: string,
+  reason?: string
+): Promise<ReservationDetail> {
+  const { data } = await api.post<ReservationDetail>(
+    `/admin/reservations/${id}/cancel`,
+    { reason: reason?.trim() ? reason.trim() : null }
+  );
+  return data;
+}
+
 export async function markNoShow(id: string): Promise<NoShowResponse> {
   const { data } = await api.post<NoShowResponse>(
     `/admin/reservations/${id}/no-show`,
@@ -120,6 +147,25 @@ export async function markNoShow(id: string): Promise<NoShowResponse> {
 
 export async function getChannels(): Promise<ChannelItem[]> {
   const { data } = await api.get<ChannelItem[]>("/admin/channels");
+  return data;
+}
+
+export async function getAvailableSlots(
+  channelId: string,
+  date: string
+): Promise<SlotInfo[]> {
+  const q = new URLSearchParams({ channel_id: channelId, date });
+  const { data } = await api.get<SlotInfo[]>(
+    `/admin/reservations/available-slots?${q}`
+  );
+  return data;
+}
+
+export async function createReservation(body: {
+  user_id: string;
+  slot_id: string;
+}): Promise<ReservationDetail> {
+  const { data } = await api.post<ReservationDetail>("/admin/reservations", body);
   return data;
 }
 
