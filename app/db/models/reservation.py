@@ -27,6 +27,16 @@ class Reservation(Base, UUIDMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("status = 'active'"),
         ),
+        # Composite index for the "my active reservations" lookup (migration 0004).
+        # Declared here (not via a bare column index=True) so its name matches the
+        # index that actually exists in the database.
+        Index("ix_reservations_user_status", "user_id", "status"),
+        # Partial index backing lifecycle transitions on active rows (migration 0004).
+        Index(
+            "ix_reservations_active_slot",
+            "slot_id",
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(

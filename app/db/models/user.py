@@ -40,8 +40,9 @@ class User(Base, UUIDMixin, TimestampMixin):
     bot_blocked: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
+    # Indexed (migration 0010) to back the score min/max range segment filter.
     participation_score: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False, server_default="0"
+        Integer, default=0, nullable=False, server_default="0", index=True
     )
     # Refreshed to now() on every successful reservation create (never on
     # cancellation) — the reset anchor for the inactivity-reminder cycle.

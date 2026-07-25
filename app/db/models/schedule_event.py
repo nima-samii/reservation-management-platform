@@ -15,6 +15,11 @@ class ScheduleEvent(Base, UUIDMixin):
     """
 
     __tablename__ = "schedule_events"
+    __table_args__ = (
+        # Named to match migration 0007 (ix_schedule_events_date), not the
+        # column-level default SQLAlchemy would derive (ix_schedule_events_event_date).
+        sa.Index("ix_schedule_events_date", "event_date"),
+    )
 
     channel_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -22,7 +27,7 @@ class ScheduleEvent(Base, UUIDMixin):
         nullable=True,
         index=True,
     )
-    event_date: Mapped[date] = mapped_column(sa.Date, nullable=False, index=True)
+    event_date: Mapped[date] = mapped_column(sa.Date, nullable=False)
     title: Mapped[str] = mapped_column(sa.String(256), nullable=False)
     sort_order: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
