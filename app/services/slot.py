@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime, timedelta
 from typing import TypedDict
 
@@ -81,6 +82,35 @@ class SlotService:
                     created += 1
         if created:
             logger.info("slots_generated", date=str(for_date), count=created)
+        return created
+
+    async def generate_slots_for_channel(
+        self, channel_id: uuid.UUID, days: int
+    ) -> int:
+        """Generate the next `days` of slots for a single channel.
+
+        Called right after a channel is created so it has bookable slots
+        immediately, instead of waiting for the nightly slot-generation cron.
+        Idempotent: existing (datetime, channel) slots are skipped.
+        """
+        today = self._now_tz().date()
+        created = 0
+        for i in range(days):
+            target = today + timedelta(days=i)
+            for dt in self._generate_slot_datetimes(target):
+                if not await self._repo.slot_exists_for_datetime_and_channel(
+                    dt, channel_id
+                ):
+                    await self._repo.save(
+                        ReservationSlot(slot_datetime=dt, channel_id=channel_id)
+                    )
+                    created += 1
+        if created:
+            logger.info(
+                "slots_generated_for_channel",
+                channel_id=str(channel_id),
+                count=created,
+            )
         return created
 
     async def generate_slots_for_next_n_days(self, days: int) -> dict[str, int]:

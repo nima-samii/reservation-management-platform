@@ -1,6 +1,7 @@
 import uuid
 from datetime import date
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,21 +46,32 @@ class ChannelRepository(BaseRepository[Channel]):
         result = await self.session.execute(stmt.limit(1))
         return result.scalars().first()
 
-    async def has_any_slots_or_reservations(self, channel_id: uuid.UUID) -> bool:
-        """Whether any reservation_slots or reservations row references this
-        channel (past or future) — mirrors the ON DELETE RESTRICT FK so the
-        API can reject with a clean 422 instead of a raw IntegrityError."""
-        slot_stmt = select(func.count(ReservationSlot.id)).where(
-            ReservationSlot.channel_id == channel_id
+    async def count_active_reservations(self, channel_id: uuid.UUID) -> int:
+        """Number of ACTIVE reservations referencing this channel. Cancelled,
+        completed and expired rows don't count — they're safe to remove."""
+        stmt = select(func.count(Reservation.id)).where(
+            Reservation.channel_id == channel_id,
+            Reservation.status == ReservationStatus.ACTIVE,
         )
-        reservation_stmt = select(func.count(Reservation.id)).where(
-            Reservation.channel_id == channel_id
+        return (await self.session.execute(stmt)).scalar() or 0
+
+    async def delete_with_slots_and_reservations(self, channel: Channel) -> None:
+        """Hard-delete the channel together with all its reservation_slots and
+        its non-active reservations.
+
+        The caller MUST have verified there are no ACTIVE reservations first
+        (see :meth:`count_active_reservations`). Order matters because both
+        reservations→slots and slots/reservations→channel use ON DELETE RESTRICT:
+        remove reservations, then slots, then the channel itself.
+        """
+        await self.session.execute(
+            sa_delete(Reservation).where(Reservation.channel_id == channel.id)
         )
-        slot_count = (await self.session.execute(slot_stmt)).scalar() or 0
-        if slot_count:
-            return True
-        reservation_count = (await self.session.execute(reservation_stmt)).scalar() or 0
-        return bool(reservation_count)
+        await self.session.execute(
+            sa_delete(ReservationSlot).where(ReservationSlot.channel_id == channel.id)
+        )
+        await self.session.delete(channel)
+        await self.session.flush()
 
     async def get_reservation_count_for_date(
         self, channel_id: uuid.UUID, slot_date: date
