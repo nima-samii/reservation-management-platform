@@ -11,10 +11,15 @@ from app.api.admin.schemas.channels import (
     MoveChannelBody,
     UpdateChannelBody,
 )
+from app.core.config import settings
+from app.core.logging import get_logger
 from app.db.models.channel import Channel
 from app.db.session import get_db_session
 from app.repositories.admin_audit_log import AdminAuditLogRepository
 from app.repositories.channel import ChannelRepository
+from app.services.slot import SlotService
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["admin-channels"])
 
@@ -70,6 +75,18 @@ async def create_channel(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="A channel with this Telegram ID already exists",
         )
+
+    # Generate upcoming slots for the new channel now, in the same transaction,
+    # so it's immediately bookable instead of waiting for the nightly cron.
+    # A generation hiccup must not fail channel creation — log and move on;
+    # the cron will backfill.
+    try:
+        slot_svc = SlotService(session)
+        await slot_svc.generate_slots_for_channel(
+            channel.id, settings.MAX_RESERVATION_DAYS_AHEAD
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("channel_slot_generation_failed", channel_id=str(channel.id), error=str(exc))
 
     audit_repo = AdminAuditLogRepository(session)
     ip = request.client.host if request.client else None
@@ -127,24 +144,28 @@ async def delete_channel(
     repo = ChannelRepository(session)
     channel = await _get_or_404(repo, channel_id)
 
-    if await repo.has_any_slots_or_reservations(channel_id):
+    # Only ACTIVE reservations block deletion. Empty/old slots and
+    # cancelled/completed/expired reservations are removed alongside the channel.
+    active_count = await repo.count_active_reservations(channel_id)
+    if active_count:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "Cannot delete: this channel has existing reservation slots or "
-                "reservations. Disable it instead."
+                f"Cannot delete: this channel has {active_count} active "
+                "reservation(s). Cancel or wait for them to complete, or disable "
+                "the channel instead."
             ),
         )
 
     try:
-        await repo.delete(channel)
+        await repo.delete_with_slots_and_reservations(channel)
     except IntegrityError:
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "Cannot delete: this channel has existing reservation slots or "
-                "reservations. Disable it instead."
+                "Cannot delete: this channel is still referenced by other "
+                "records. Disable it instead."
             ),
         )
 
