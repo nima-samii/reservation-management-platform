@@ -77,6 +77,12 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     restart: unless-stopped
+    # Load secrets from .env at runtime. .env is excluded from the image by
+    # .dockerignore (security), so the container must get it here instead.
+    # env_file passes values literally — required for ADMIN_PASSWORD, whose
+    # bcrypt hash contains `$` that compose ${..} interpolation would mangle.
+    env_file:
+      - .env
     environment:
       # ── Infrastructure ────────────────────────────────────────────
       POSTGRES_HOST: db
