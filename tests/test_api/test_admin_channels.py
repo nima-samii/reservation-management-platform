@@ -59,6 +59,13 @@ async def client(monkeypatch):
         MagicMock(return_value=MagicMock(log=audit_log)),
     )
 
+    # Stub out slot generation on create — exercised in service-level tests.
+    monkeypatch.setattr(
+        channels_mod,
+        "SlotService",
+        MagicMock(return_value=MagicMock(generate_slots_for_channel=AsyncMock(return_value=0))),
+    )
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         c._audit_log = audit_log  # type: ignore[attr-defined]
@@ -217,38 +224,40 @@ async def test_update_channel_not_found_returns_404(client, monkeypatch):
 # ── Delete ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_delete_blocked_when_slots_exist(client, monkeypatch):
+async def test_delete_blocked_when_active_reservations_exist(client, monkeypatch):
     existing = _make_channel()
     repo = _patch_repo(
         monkeypatch,
         get_by_id=AsyncMock(return_value=existing),
-        has_any_slots_or_reservations=AsyncMock(return_value=True),
-        delete=AsyncMock(),
+        count_active_reservations=AsyncMock(return_value=3),
+        delete_with_slots_and_reservations=AsyncMock(),
     )
 
     resp = await client.delete(f"/api/admin/channels/{existing.id}")
 
     assert resp.status_code == 422
-    assert "Disable it instead" in resp.json()["detail"]
-    repo.delete.assert_not_awaited()
+    assert "active reservation" in resp.json()["detail"]
+    repo.delete_with_slots_and_reservations.assert_not_awaited()
     client._audit_log.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_delete_succeeds_when_no_dependencies(client, monkeypatch):
+async def test_delete_succeeds_when_no_active_reservations(client, monkeypatch):
+    """Empty slots and cancelled/completed reservations don't block deletion —
+    they're cascaded away with the channel."""
     existing = _make_channel()
     repo = _patch_repo(
         monkeypatch,
         get_by_id=AsyncMock(return_value=existing),
-        has_any_slots_or_reservations=AsyncMock(return_value=False),
-        delete=AsyncMock(),
+        count_active_reservations=AsyncMock(return_value=0),
+        delete_with_slots_and_reservations=AsyncMock(),
     )
 
     resp = await client.delete(f"/api/admin/channels/{existing.id}")
 
     assert resp.status_code == 200
     assert resp.json()["deleted"] is True
-    repo.delete.assert_awaited_once()
+    repo.delete_with_slots_and_reservations.assert_awaited_once()
     assert client._audit_log.await_args.kwargs["action"] == "channel_deleted"
 
 

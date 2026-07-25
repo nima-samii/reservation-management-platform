@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Build context for admin-panel/Dockerfile (the Next.js admin image).
+# node_modules is reinstalled inside the `deps` stage and .next is rebuilt in the
+# `builder` stage, so copying the local (host) copies in via `COPY . .` only
+# wastes space and risks shipping stale/platform-wrong artifacts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Secrets & environment ──
+.env
+.env.*
+!.env.local.example
+
+# ── Version control ──
+.git
+.gitignore
+
+# ── Node dependencies (reinstalled in the deps stage) ──
+node_modules/
+
+# ── Next.js build output & caches (rebuilt in the builder stage) ──
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Logs & editor/OS cruft ──
+*.log
+npm-debug.log*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
