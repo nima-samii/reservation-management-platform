@@ -142,7 +142,7 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         category="reminders", label="Same-day reminder hour",
         description="Hour (0-23, local timezone) the \"today's session\" reminder job fires.",
         value_type=int, example=12, validator="cron_hour", min=0, max=23,
-        restart_behavior=RestartBehavior.SCHEDULER_RESTART,
+        restart_behavior=RestartBehavior.LIVE,
     ),
     SettingMeta(
         key="PRE_SESSION_REMINDER_MINUTES", json_key="pre_session_reminder_minutes",
@@ -205,7 +205,7 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         category="inactivity_reminder", label="Daily scan hour",
         description="Hour (0-23, local timezone) the daily inactivity scan runs.",
         value_type=int, example=18, validator="cron_hour", min=0, max=23,
-        restart_behavior=RestartBehavior.SCHEDULER_RESTART,
+        restart_behavior=RestartBehavior.LIVE,
     ),
     # ── Daily Broadcast ───────────────────────────────────────────────────
     SettingMeta(
@@ -213,7 +213,7 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         category="broadcast", label="Broadcast hour",
         description="Hour (0-23, local timezone) the daily schedule is posted to each channel.",
         value_type=int, example=12, validator="cron_hour", min=0, max=23,
-        restart_behavior=RestartBehavior.SCHEDULER_RESTART,
+        restart_behavior=RestartBehavior.LIVE,
     ),
     SettingMeta(
         key="ENABLE_BROADCAST_AUTO_PIN", json_key="enable_broadcast_auto_pin",

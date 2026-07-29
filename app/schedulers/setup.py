@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -20,9 +22,49 @@ logger = get_logger(__name__)
 # enqueue one-off delivery jobs without an app/request reference.
 _scheduler: AsyncIOScheduler | None = None
 
+# Maps a settings key to the scheduler job whose daily cron hour it controls.
+# When the admin panel changes one of these at runtime, the matching job is
+# rescheduled in place (see apply_scheduler_setting_changes) so the new hour
+# takes effect without a process restart.
+_HOUR_SETTING_TO_JOB: dict[str, str] = {
+    "SAME_DAY_REMINDER_HOUR": "same_day_reminders",
+    "DAILY_BROADCAST_HOUR": "daily_broadcast",
+    "INACTIVITY_REMINDER_HOUR": "inactivity_reminders",
+}
+
 
 def get_scheduler() -> AsyncIOScheduler | None:
     return _scheduler
+
+
+def _hour_trigger(hour: int) -> CronTrigger:
+    """Build the daily-at-`hour`:00 trigger shared by create_scheduler() and
+    apply_scheduler_setting_changes() so the two never drift apart."""
+    return CronTrigger(hour=hour, minute=0, timezone=settings.TIMEZONE)
+
+
+def apply_scheduler_setting_changes(changed_keys: Iterable[str]) -> None:
+    """Reschedule any hour-based job whose settings key just changed.
+
+    Called by the admin settings PATCH handler after the override is persisted
+    and applied to the live `settings` object. Best-effort: a missing scheduler
+    or job is logged, never raised — the new value is already persisted and
+    would apply on the next startup regardless.
+    """
+    scheduler = get_scheduler()
+    if scheduler is None:
+        # No running scheduler (e.g. tests, or a save before startup finished).
+        return
+    for key in changed_keys:
+        job_id = _HOUR_SETTING_TO_JOB.get(key)
+        if job_id is None:
+            continue
+        hour = getattr(settings, key)
+        try:
+            scheduler.reschedule_job(job_id, trigger=_hour_trigger(hour))
+            logger.info("scheduler_job_rescheduled", job_id=job_id, hour=hour)
+        except Exception:
+            logger.exception("scheduler_reschedule_failed", job_id=job_id)
 
 
 def create_scheduler() -> AsyncIOScheduler:
@@ -52,7 +94,7 @@ def create_scheduler() -> AsyncIOScheduler:
     # Run at the configured reminder hour — reminds users of today's sessions
     scheduler.add_job(
         send_same_day_reminders_job,
-        trigger=CronTrigger(hour=settings.SAME_DAY_REMINDER_HOUR, minute=0, timezone=settings.TIMEZONE),
+        trigger=_hour_trigger(settings.SAME_DAY_REMINDER_HOUR),
         id="same_day_reminders",
         replace_existing=True,
         max_instances=1,
@@ -82,7 +124,7 @@ def create_scheduler() -> AsyncIOScheduler:
     # Run at the configured broadcast hour — publishes today's schedule to each channel
     scheduler.add_job(
         send_daily_schedule_job,
-        trigger=CronTrigger(hour=settings.DAILY_BROADCAST_HOUR, minute=0, timezone=settings.TIMEZONE),
+        trigger=_hour_trigger(settings.DAILY_BROADCAST_HOUR),
         id="daily_broadcast",
         replace_existing=True,
         max_instances=1,
@@ -102,7 +144,7 @@ def create_scheduler() -> AsyncIOScheduler:
     # Run at the configured hour — DM users overdue for a reservation reminder
     scheduler.add_job(
         send_inactivity_reminders_job,
-        trigger=CronTrigger(hour=settings.INACTIVITY_REMINDER_HOUR, minute=0, timezone=settings.TIMEZONE),
+        trigger=_hour_trigger(settings.INACTIVITY_REMINDER_HOUR),
         id="inactivity_reminders",
         replace_existing=True,
         max_instances=1,
