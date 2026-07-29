@@ -14,6 +14,7 @@ export interface SettingFieldMeta {
   placeholder: string | null;
   restart_behavior: RestartBehavior;
   runtime_safe: boolean;
+  widget: string | null;
 }
 
 export interface SettingCategoryMeta {

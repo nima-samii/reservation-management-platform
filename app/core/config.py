@@ -18,6 +18,43 @@ SETTINGS_OVERRIDE_PATH = Path("data/admin_settings_override.json")
 # Highest supported REQUIRED_CHANNEL_N_* suffix.
 MAX_REQUIRED_CHANNELS = 5
 
+# Settings that hold a local "HH:MM" time-of-day. They were historically bare
+# hour ints (e.g. 12), so normalize_time_setting() accepts a legacy int/"14"
+# and canonicalizes to "HH:MM" — this keeps existing .env values and persisted
+# admin overrides working after the switch to minute-precision times.
+TIME_SETTING_KEYS = frozenset(
+    {
+        "SAME_DAY_CUTOFF_HOUR",
+        "SAME_DAY_CANCEL_CUTOFF_HOUR",
+        "SAME_DAY_REMINDER_HOUR",
+        "INACTIVITY_REMINDER_HOUR",
+        "DAILY_BROADCAST_HOUR",
+    }
+)
+
+
+def normalize_time_setting(value: object) -> str:
+    """Coerce a whole-hour int (or "14") or an "HH:MM" string to canonical "HH:MM".
+
+    Raises ValueError on anything unparseable so a bad env value fails loudly at
+    construction; the override loader swallows the error and keeps the default.
+    """
+    # bool is an int subclass — reject it explicitly before the int branch.
+    if isinstance(value, bool):
+        raise ValueError(f"invalid time value: {value!r}")
+    if isinstance(value, int):
+        hour, minute = value, 0
+    else:
+        text = str(value).strip()
+        if ":" in text:
+            hh, mm = text.split(":", 1)
+            hour, minute = int(hh), int(mm)
+        else:
+            hour, minute = int(text), 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"time out of range: {value!r}")
+    return f"{hour:02d}:{minute:02d}"
+
 
 @dataclass(frozen=True)
 class ChannelConfig:
@@ -67,10 +104,11 @@ class Settings(BaseSettings):
     MAX_ACTIVE_RESERVATIONS: int = 10
     MAX_RESERVATION_DAYS_AHEAD: int = 14
     CHANNEL_CAPACITY_THRESHOLD: float = 0.70
-    # Hour (0-23, local timezone) after which same-day reservations are blocked
-    SAME_DAY_CUTOFF_HOUR: int = 12
-    # Hour (0-23, local timezone) after which same-day cancellations are blocked
-    SAME_DAY_CANCEL_CUTOFF_HOUR: int = 12
+    # Time (HH:MM, local timezone) after which same-day reservations are blocked.
+    # Historically a bare hour int; a legacy int like 12 is normalized to "12:00".
+    SAME_DAY_CUTOFF_HOUR: str = "12:00"
+    # Time (HH:MM, local timezone) after which same-day cancellations are blocked
+    SAME_DAY_CANCEL_CUTOFF_HOUR: str = "12:00"
 
     # ── Slot schedule ─────────────────────────────────────────────────────
     SLOT_START_HOUR: int = 16   # 4:00 PM
@@ -87,8 +125,8 @@ class Settings(BaseSettings):
     ANTI_FLOOD_SECONDS: float = 0.5
 
     # ── Notifications & Reminders ─────────────────────────────────────────
-    # Hour (0-23, local timezone) same-day reminders are dispatched
-    SAME_DAY_REMINDER_HOUR: int = 12
+    # Time (HH:MM, local timezone) same-day reminders are dispatched
+    SAME_DAY_REMINDER_HOUR: str = "12:00"
     # Minutes before session start to send the pre-session reminder
     PRE_SESSION_REMINDER_MINUTES: int = 30
     # Master switch: send a final "join now" reminder shortly before start.
@@ -115,12 +153,12 @@ class Settings(BaseSettings):
     # Days without a new reservation after which a reminder is due. Repeats
     # every this many days until the user reserves again.
     INACTIVITY_REMINDER_THRESHOLD_DAYS: int = 30
-    # Hour (0-23, local timezone) the daily inactivity scan runs.
-    INACTIVITY_REMINDER_HOUR: int = 18
+    # Time (HH:MM, local timezone) the daily inactivity scan runs.
+    INACTIVITY_REMINDER_HOUR: str = "18:00"
 
     # ── Daily Broadcast ───────────────────────────────────────────────────
-    # Hour (0-23, local timezone) daily schedule is broadcast to each channel
-    DAILY_BROADCAST_HOUR: int = 12
+    # Time (HH:MM, local timezone) daily schedule is broadcast to each channel
+    DAILY_BROADCAST_HOUR: str = "12:00"
     # Pin the broadcast message in the channel after sending
     ENABLE_BROADCAST_AUTO_PIN: bool = True
     # Delete the previous day's broadcast when publishing today's
@@ -224,6 +262,12 @@ class Settings(BaseSettings):
             raise ValueError("CHANNEL_CAPACITY_THRESHOLD must be between 0 and 1")
         return v
 
+    @field_validator(*sorted(TIME_SETTING_KEYS), mode="before")
+    @classmethod
+    def _normalize_time_settings(cls, v: object) -> str:
+        """Normalize env/default values to "HH:MM" (accepts legacy bare hours)."""
+        return normalize_time_setting(v)
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -239,11 +283,19 @@ def load_settings_override() -> None:
         return
     try:
         data = json.loads(SETTINGS_OVERRIDE_PATH.read_text(encoding="utf-8"))
-        for key, value in data.items():
-            if hasattr(settings, key):
-                object.__setattr__(settings, key, value)
     except Exception:
-        pass  # malformed file must never break startup
+        return  # malformed/unreadable file must never break startup
+    for key, value in data.items():
+        try:
+            if not hasattr(settings, key):
+                continue
+            # Persisted time overrides may be legacy bare-hour ints — canonicalize
+            # them here since object.__setattr__ bypasses the field validators.
+            if key in TIME_SETTING_KEYS:
+                value = normalize_time_setting(value)
+            object.__setattr__(settings, key, value)
+        except Exception:
+            continue  # one bad key must not drop the rest of the overrides
 
 
 def save_settings_override(updates: dict) -> None:

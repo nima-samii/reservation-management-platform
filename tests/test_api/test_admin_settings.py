@@ -94,8 +94,11 @@ async def test_restart_behavior_metadata(client):
     fields_by_key = {
         f["key"]: f for c in resp.json() for f in c["fields"]
     }
+    # These three are hour-based scheduler jobs, but the PATCH handler now
+    # reschedules them in place via apply_scheduler_setting_changes(), so they
+    # apply live rather than requiring a process restart.
     for key in ("same_day_reminder_hour", "daily_broadcast_hour", "inactivity_reminder_hour"):
-        assert fields_by_key[key]["restart_behavior"] == RestartBehavior.SCHEDULER_RESTART.value
+        assert fields_by_key[key]["restart_behavior"] == RestartBehavior.LIVE.value
     assert fields_by_key["membership_cache_ttl"]["restart_behavior"] == RestartBehavior.CACHE_REFRESH.value
     assert fields_by_key["max_active_reservations"]["restart_behavior"] == RestartBehavior.LIVE.value
 
@@ -165,6 +168,61 @@ async def test_patch_valid_change_persists_and_roundtrips(client):
     resp2 = await client.get("/api/admin/settings")
     assert resp2.json()["rate_limits"]["rate_limit_requests"] == 45
     assert settings.RATE_LIMIT_REQUESTS == 45
+
+
+@pytest.mark.asyncio
+async def test_patch_broadcast_hour_reschedules_running_job(client, monkeypatch):
+    """Changing a scheduler hour reschedules the live job (no restart needed)."""
+    fake_scheduler = MagicMock()
+    monkeypatch.setattr(
+        "app.schedulers.setup.get_scheduler", lambda: fake_scheduler
+    )
+
+    resp = await client.patch(
+        "/api/admin/settings", json={"broadcast": {"daily_broadcast_hour": "14:30"}}
+    )
+    assert resp.status_code == 200
+    assert settings.DAILY_BROADCAST_HOUR == "14:30"
+
+    # The daily_broadcast job was rescheduled with the new time (hour + minute).
+    fake_scheduler.reschedule_job.assert_called_once()
+    args, kwargs = fake_scheduler.reschedule_job.call_args
+    assert "daily_broadcast" in args
+    assert str(kwargs["trigger"]) == "cron[hour='14', minute='30']"
+
+
+@pytest.mark.asyncio
+async def test_patch_cutoff_time_minute_precision_roundtrips(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"same_day_cutoff_hour": "14:15"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reservation_rules"]["same_day_cutoff_hour"] == "14:15"
+    assert settings.SAME_DAY_CUTOFF_HOUR == "14:15"
+
+
+@pytest.mark.asyncio
+async def test_patch_invalid_time_rejected(client):
+    resp = await client.patch(
+        "/api/admin/settings", json={"broadcast": {"daily_broadcast_hour": "25:99"}}
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_non_scheduler_setting_does_not_reschedule(client, monkeypatch):
+    """A live (non-scheduler) setting must not touch the scheduler."""
+    fake_scheduler = MagicMock()
+    monkeypatch.setattr(
+        "app.schedulers.setup.get_scheduler", lambda: fake_scheduler
+    )
+
+    resp = await client.patch(
+        "/api/admin/settings", json={"rate_limits": {"rate_limit_requests": 33}}
+    )
+    assert resp.status_code == 200
+    fake_scheduler.reschedule_job.assert_not_called()
 
 
 # ── Membership channels ───────────────────────────────────────────────────
@@ -296,3 +354,32 @@ def test_load_settings_override_applies_file_on_top_of_defaults(tmp_path, monkey
     load_settings_override()
 
     assert settings.RATE_LIMIT_WINDOW_SECONDS == 99
+
+
+def test_load_settings_override_normalizes_legacy_int_time(tmp_path, monkeypatch):
+    """A pre-existing override written as a bare-hour int loads as 'HH:MM'."""
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"DAILY_BROADCAST_HOUR": 14, "SAME_DAY_CUTOFF_HOUR": 9}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.DAILY_BROADCAST_HOUR == "14:00"
+    assert settings.SAME_DAY_CUTOFF_HOUR == "09:00"
+
+
+def test_load_settings_override_bad_time_does_not_drop_other_keys(tmp_path, monkeypatch):
+    """One unparseable time value must not discard the rest of the overrides."""
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"DAILY_BROADCAST_HOUR": "not-a-time", "RATE_LIMIT_WINDOW_SECONDS": 88}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.RATE_LIMIT_WINDOW_SECONDS == 88

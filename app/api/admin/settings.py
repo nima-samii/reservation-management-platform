@@ -23,6 +23,7 @@ from app.core.settings_registry import (
     validate_membership_channel_id,
     validate_membership_channel_url,
 )
+from app.schedulers.setup import apply_scheduler_setting_changes
 
 router = APIRouter(tags=["admin-settings"])
 TZ = pytz.timezone(settings.TIMEZONE)
@@ -63,6 +64,7 @@ async def get_settings_metadata(
                 placeholder=meta.placeholder,
                 restart_behavior=meta.restart_behavior.value,
                 runtime_safe=meta.runtime_safe,
+                widget=meta.widget,
             )
         )
     return [
@@ -139,6 +141,10 @@ async def patch_settings(
 
         override_dict = {BY_JSON_KEY[k].key: v for k, v in incoming.items()}
         save_settings_override(override_dict)
+
+        # Hour-based scheduler jobs bake their cron trigger at startup; reschedule
+        # any that just changed so the new hour applies without a process restart.
+        apply_scheduler_setting_changes(override_dict.keys())
 
         history_key = CacheKey.admin_settings_history()
         for entry in history_entries:

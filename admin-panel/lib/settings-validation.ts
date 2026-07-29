@@ -29,7 +29,7 @@ export function validateFieldValue(
 
   // str fields
   const str = String(value ?? "");
-  if (meta.key === "final_slot_time") {
+  if (meta.widget === "time") {
     if (!HH_MM_RE.test(str)) return "Expected a 24-hour HH:MM time, e.g. 23:59";
   }
   return null;

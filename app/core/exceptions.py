@@ -55,17 +55,24 @@ class PastSlotError(ReservationError):
         super().__init__("Cannot reserve a slot in the past.")
 
 
+def _format_cutoff(cutoff: "str | int") -> str:
+    """Render a cutoff as HH:MM, tolerating a legacy bare-hour int."""
+    if isinstance(cutoff, int) and not isinstance(cutoff, bool):
+        return f"{cutoff:02d}:00"
+    return str(cutoff)
+
+
 class SameDayCutoffError(ReservationError):
-    def __init__(self, cutoff_hour: int = 12) -> None:
+    def __init__(self, cutoff_time: "str | int" = "12:00") -> None:
         super().__init__(
-            f"Same-day reservations are closed after {cutoff_hour:02d}:00."
+            f"Same-day reservations are closed after {_format_cutoff(cutoff_time)}."
         )
 
 
 class CancellationCutoffError(ReservationError):
-    def __init__(self, cutoff_hour: int = 12) -> None:
+    def __init__(self, cutoff_time: "str | int" = "12:00") -> None:
         super().__init__(
-            f"Same-day cancellations are closed after {cutoff_hour:02d}:00."
+            f"Same-day cancellations are closed after {_format_cutoff(cutoff_time)}."
         )
 
 
