@@ -132,7 +132,6 @@ class SlotService:
         Returns empty groups when the same-day cutoff has passed for today.
         """
         threshold = settings.CHANNEL_CAPACITY_THRESHOLD
-        slots_per_day = self._slots_per_day()
         now = self._now_tz()
 
         if is_same_day_cutoff_passed(slot_date, now, settings.SAME_DAY_CUTOFF_HOUR):
@@ -153,7 +152,18 @@ class SlotService:
             booked = await self._channel_repo.get_reservation_count_for_date(
                 channel.id, slot_date
             )
-            fill_ratio = booked / slots_per_day if slots_per_day > 0 else 1.0
+            # Real per-day capacity is the number of slots actually generated for
+            # this channel on this date — NOT the settings-derived _slots_per_day().
+            # The latter recomputes from the current SLOT_* settings, so tightening
+            # the schedule after slots were generated shrinks the denominator and
+            # unlocks the next channel far too early. (Same bug class as the
+            # dashboard "/ 100" capacity fix.) A channel with no slots that day
+            # (capacity 0) is treated as "full" so the next channel still unlocks
+            # and the user is never left with an empty list.
+            capacity = await self._repo.count_slots_for_date_and_channel(
+                slot_date, channel.id
+            )
+            fill_ratio = booked / capacity if capacity > 0 else 1.0
             next_channel_unlocked = fill_ratio >= threshold
 
             if i == 0:

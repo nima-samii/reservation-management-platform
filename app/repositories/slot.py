@@ -40,6 +40,25 @@ class SlotRepository(BaseRepository[ReservationSlot]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def count_slots_for_date_and_channel(
+        self, target_date: date, channel_id: uuid.UUID
+    ) -> int:
+        """Total slots generated for a channel on a calendar date.
+
+        Uses the same ``func.date(slot_datetime) == target_date`` predicate as
+        ChannelRepository.get_reservation_count_for_date so the two form a
+        consistent fill ratio (booked / generated). This is the real per-day
+        capacity — do NOT substitute the settings-derived _slots_per_day(),
+        which diverges from the actual generated slots once the slot-schedule
+        settings change after generation.
+        """
+        stmt = select(func.count(ReservationSlot.id)).where(
+            func.date(ReservationSlot.slot_datetime) == target_date,
+            ReservationSlot.channel_id == channel_id,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar() or 0
+
     async def get_slot_with_lock(self, slot_id: uuid.UUID) -> ReservationSlot | None:
         stmt = (
             select(ReservationSlot)

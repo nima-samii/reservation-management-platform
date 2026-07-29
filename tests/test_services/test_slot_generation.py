@@ -1,7 +1,8 @@
 """Tests for SlotService._generate_slot_datetimes — pure datetime logic, no DB required."""
+import uuid
 from datetime import date, datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytz
 import pytest
@@ -140,3 +141,91 @@ class TestParseFinalSlotTime:
     def test_parses_custom_time(self, mock_settings):
         mock_settings.FINAL_SLOT_TIME = "22:45"
         assert self.svc._parse_final_slot_time() == (22, 45)
+
+
+# ── get_available_slots_for_date_grouped (channel-unlock threshold) ────────────
+
+class TestChannelUnlockThreshold:
+    """The next channel unlocks only when the current channel's fill ratio
+    reaches CHANNEL_CAPACITY_THRESHOLD. The denominator MUST be the real
+    per-channel/day generated slot count (repo), NOT the settings-derived
+    _slots_per_day() — otherwise changing SLOT_* settings after generation
+    shrinks the denominator and unlocks later channels far too early.
+    """
+
+    # Far-future date so the same-day cutoff never interferes.
+    FUTURE = date(2099, 1, 1)
+
+    def _svc_with_channels(self, n: int) -> SlotService:
+        svc = SlotService(session=MagicMock())
+        channels = [SimpleNamespace(id=uuid.uuid4()) for _ in range(n)]
+        svc._channel_repo.get_active_channels_ordered = AsyncMock(return_value=channels)
+        return svc
+
+    @pytest.mark.asyncio
+    @patch("app.services.slot.settings")
+    async def test_next_channel_locked_when_below_threshold(self, mock_settings):
+        # Exactly the reported symptom: channel 0 at 3/19 (16%) < 70%.
+        mock_settings.CHANNEL_CAPACITY_THRESHOLD = 0.70
+        mock_settings.SAME_DAY_CUTOFF_HOUR = "12:00"
+        svc = self._svc_with_channels(2)
+
+        ch0_slots = ["ch0-slot"]
+        svc._repo.get_available_slots_for_date_and_channel = AsyncMock(
+            side_effect=[ch0_slots]
+        )
+        svc._channel_repo.get_reservation_count_for_date = AsyncMock(side_effect=[3])
+        svc._repo.count_slots_for_date_and_channel = AsyncMock(side_effect=[19])
+
+        grouped = await svc.get_available_slots_for_date_grouped(self.FUTURE)
+
+        assert grouped["recommended"] == ch0_slots
+        assert grouped["more_available"] == []  # channel 1 stayed locked
+        # Loop must break before ever querying channel 1.
+        assert svc._repo.get_available_slots_for_date_and_channel.await_count == 1
+
+    @pytest.mark.asyncio
+    @patch("app.services.slot.settings")
+    async def test_denominator_uses_real_capacity_not_settings(self, mock_settings):
+        # Real capacity 4 → 3/4 = 75% ≥ 70% unlocks channel 1, even though the
+        # settings-derived _slots_per_day() (=17) would say 3/17 < 70% locked.
+        mock_settings.CHANNEL_CAPACITY_THRESHOLD = 0.70
+        mock_settings.SAME_DAY_CUTOFF_HOUR = "12:00"
+        svc = self._svc_with_channels(2)
+        # Guarantee the gate no longer consults the settings-derived helper.
+        svc._slots_per_day = MagicMock(
+            side_effect=AssertionError("_slots_per_day() must not gate unlocking")
+        )
+
+        ch0_slots, ch1_slots = ["ch0-slot"], ["ch1-slot"]
+        svc._repo.get_available_slots_for_date_and_channel = AsyncMock(
+            side_effect=[ch0_slots, ch1_slots]
+        )
+        svc._channel_repo.get_reservation_count_for_date = AsyncMock(side_effect=[3, 0])
+        svc._repo.count_slots_for_date_and_channel = AsyncMock(side_effect=[4, 19])
+
+        grouped = await svc.get_available_slots_for_date_grouped(self.FUTURE)
+
+        assert grouped["recommended"] == ch0_slots
+        assert grouped["more_available"] == ch1_slots  # unlocked via real capacity
+
+    @pytest.mark.asyncio
+    @patch("app.services.slot.settings")
+    async def test_zero_capacity_channel_unlocks_next(self, mock_settings):
+        # A channel with no slots generated that day must not strand the user:
+        # it is treated as "full" so the next channel still unlocks.
+        mock_settings.CHANNEL_CAPACITY_THRESHOLD = 0.70
+        mock_settings.SAME_DAY_CUTOFF_HOUR = "12:00"
+        svc = self._svc_with_channels(2)
+
+        ch1_slots = ["ch1-slot"]
+        svc._repo.get_available_slots_for_date_and_channel = AsyncMock(
+            side_effect=[[], ch1_slots]
+        )
+        svc._channel_repo.get_reservation_count_for_date = AsyncMock(side_effect=[0, 0])
+        svc._repo.count_slots_for_date_and_channel = AsyncMock(side_effect=[0, 19])
+
+        grouped = await svc.get_available_slots_for_date_grouped(self.FUTURE)
+
+        assert grouped["recommended"] == []
+        assert grouped["more_available"] == ch1_slots
