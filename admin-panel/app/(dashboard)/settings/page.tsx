@@ -162,6 +162,33 @@ function TextInput({
   );
 }
 
+function TimeInput({
+  meta,
+  value,
+  error,
+  onChange,
+}: {
+  meta: SettingFieldMeta;
+  value: string;
+  error?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <FieldLabel meta={meta} />
+      <input
+        type="time"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full bg-gray-800 border text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 [color-scheme:dark] ${
+          error ? "border-red-600 focus:ring-red-600" : "border-gray-700 focus:ring-indigo-500"
+        }`}
+      />
+      {error && <p className="text-xs text-red-400 mt-0.5">{error}</p>}
+    </div>
+  );
+}
+
 function ToggleInput({
   meta,
   value,
@@ -212,6 +239,9 @@ function SettingField({
 }) {
   if (meta.type === "bool") {
     return <ToggleInput meta={meta} value={Boolean(value)} onChange={onChange} />;
+  }
+  if (meta.widget === "time") {
+    return <TimeInput meta={meta} value={value === null ? "" : String(value)} error={error} onChange={onChange} />;
   }
   if (NULLABLE_TEXT_FIELDS.has(meta.key)) {
     return <TextInput meta={meta} value={value === null ? "" : String(value)} error={error} onChange={onChange} />;

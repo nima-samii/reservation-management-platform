@@ -51,6 +51,9 @@ class SettingMeta:
     placeholder: str | None = None
     restart_behavior: RestartBehavior = RestartBehavior.LIVE
     runtime_safe: bool = True
+    # Optional UI-widget hint for the admin panel. "time" renders a native
+    # HH:MM time picker; None falls back to the default input for value_type.
+    widget: str | None = None
 
 
 SETTINGS_REGISTRY: list[SettingMeta] = [
@@ -76,15 +79,15 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta(
         key="SAME_DAY_CUTOFF_HOUR", json_key="same_day_cutoff_hour",
-        category="reservation_rules", label="Same-day cutoff hour",
-        description="Hour (0-23, local timezone) after which same-day bookings are blocked.",
-        value_type=int, example=12, validator="cron_hour", min=0, max=23,
+        category="reservation_rules", label="Same-day cutoff time",
+        description="Time (HH:MM, local timezone) after which same-day bookings are blocked.",
+        value_type=str, example="12:00", validator="hh_mm_time", widget="time",
     ),
     SettingMeta(
         key="SAME_DAY_CANCEL_CUTOFF_HOUR", json_key="same_day_cancel_cutoff_hour",
-        category="reservation_rules", label="Same-day cancel cutoff hour",
-        description="Hour (0-23, local timezone) after which same-day cancellations are blocked.",
-        value_type=int, example=12, validator="cron_hour", min=0, max=23,
+        category="reservation_rules", label="Same-day cancel cutoff time",
+        description="Time (HH:MM, local timezone) after which same-day cancellations are blocked.",
+        value_type=str, example="12:00", validator="hh_mm_time", widget="time",
     ),
     # ── Slot Schedule ─────────────────────────────────────────────────────
     SettingMeta(
@@ -116,6 +119,7 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         category="slot_schedule", label="Final slot time (HH:MM)",
         description="Time of the extra terminal slot. Only used when the final midnight slot is enabled.",
         value_type=str, example="23:59", validator="hh_mm_time", placeholder="23:59",
+        widget="time",
     ),
     # ── Rate Limits ───────────────────────────────────────────────────────
     SettingMeta(
@@ -139,9 +143,9 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
     # ── Reminders ─────────────────────────────────────────────────────────
     SettingMeta(
         key="SAME_DAY_REMINDER_HOUR", json_key="same_day_reminder_hour",
-        category="reminders", label="Same-day reminder hour",
-        description="Hour (0-23, local timezone) the \"today's session\" reminder job fires.",
-        value_type=int, example=12, validator="cron_hour", min=0, max=23,
+        category="reminders", label="Same-day reminder time",
+        description="Time (HH:MM, local timezone) the \"today's session\" reminder job fires.",
+        value_type=str, example="12:00", validator="hh_mm_time", widget="time",
         restart_behavior=RestartBehavior.LIVE,
     ),
     SettingMeta(
@@ -202,17 +206,17 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta(
         key="INACTIVITY_REMINDER_HOUR", json_key="inactivity_reminder_hour",
-        category="inactivity_reminder", label="Daily scan hour",
-        description="Hour (0-23, local timezone) the daily inactivity scan runs.",
-        value_type=int, example=18, validator="cron_hour", min=0, max=23,
+        category="inactivity_reminder", label="Daily scan time",
+        description="Time (HH:MM, local timezone) the daily inactivity scan runs.",
+        value_type=str, example="18:00", validator="hh_mm_time", widget="time",
         restart_behavior=RestartBehavior.LIVE,
     ),
     # ── Daily Broadcast ───────────────────────────────────────────────────
     SettingMeta(
         key="DAILY_BROADCAST_HOUR", json_key="daily_broadcast_hour",
-        category="broadcast", label="Broadcast hour",
-        description="Hour (0-23, local timezone) the daily schedule is posted to each channel.",
-        value_type=int, example=12, validator="cron_hour", min=0, max=23,
+        category="broadcast", label="Broadcast time",
+        description="Time (HH:MM, local timezone) the daily schedule is posted to each channel.",
+        value_type=str, example="12:00", validator="hh_mm_time", widget="time",
         restart_behavior=RestartBehavior.LIVE,
     ),
     SettingMeta(

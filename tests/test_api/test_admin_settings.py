@@ -179,16 +179,35 @@ async def test_patch_broadcast_hour_reschedules_running_job(client, monkeypatch)
     )
 
     resp = await client.patch(
-        "/api/admin/settings", json={"broadcast": {"daily_broadcast_hour": 14}}
+        "/api/admin/settings", json={"broadcast": {"daily_broadcast_hour": "14:30"}}
     )
     assert resp.status_code == 200
-    assert settings.DAILY_BROADCAST_HOUR == 14
+    assert settings.DAILY_BROADCAST_HOUR == "14:30"
 
-    # The daily_broadcast job was rescheduled with the new hour.
+    # The daily_broadcast job was rescheduled with the new time (hour + minute).
     fake_scheduler.reschedule_job.assert_called_once()
     args, kwargs = fake_scheduler.reschedule_job.call_args
     assert "daily_broadcast" in args
-    assert str(kwargs["trigger"]) == "cron[hour='14', minute='0']"
+    assert str(kwargs["trigger"]) == "cron[hour='14', minute='30']"
+
+
+@pytest.mark.asyncio
+async def test_patch_cutoff_time_minute_precision_roundtrips(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"same_day_cutoff_hour": "14:15"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reservation_rules"]["same_day_cutoff_hour"] == "14:15"
+    assert settings.SAME_DAY_CUTOFF_HOUR == "14:15"
+
+
+@pytest.mark.asyncio
+async def test_patch_invalid_time_rejected(client):
+    resp = await client.patch(
+        "/api/admin/settings", json={"broadcast": {"daily_broadcast_hour": "25:99"}}
+    )
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -335,3 +354,32 @@ def test_load_settings_override_applies_file_on_top_of_defaults(tmp_path, monkey
     load_settings_override()
 
     assert settings.RATE_LIMIT_WINDOW_SECONDS == 99
+
+
+def test_load_settings_override_normalizes_legacy_int_time(tmp_path, monkeypatch):
+    """A pre-existing override written as a bare-hour int loads as 'HH:MM'."""
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"DAILY_BROADCAST_HOUR": 14, "SAME_DAY_CUTOFF_HOUR": 9}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.DAILY_BROADCAST_HOUR == "14:00"
+    assert settings.SAME_DAY_CUTOFF_HOUR == "09:00"
+
+
+def test_load_settings_override_bad_time_does_not_drop_other_keys(tmp_path, monkeypatch):
+    """One unparseable time value must not discard the rest of the overrides."""
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"DAILY_BROADCAST_HOUR": "not-a-time", "RATE_LIMIT_WINDOW_SECONDS": 88}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.RATE_LIMIT_WINDOW_SECONDS == 88

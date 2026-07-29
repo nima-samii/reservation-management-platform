@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.core.booking_rules import parse_cutoff_time
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schedulers.jobs.broadcast import send_daily_schedule_job
@@ -37,10 +38,13 @@ def get_scheduler() -> AsyncIOScheduler | None:
     return _scheduler
 
 
-def _hour_trigger(hour: int) -> CronTrigger:
-    """Build the daily-at-`hour`:00 trigger shared by create_scheduler() and
-    apply_scheduler_setting_changes() so the two never drift apart."""
-    return CronTrigger(hour=hour, minute=0, timezone=settings.TIMEZONE)
+def _time_trigger(time_str: str) -> CronTrigger:
+    """Build the daily-at-`HH:MM` trigger shared by create_scheduler() and
+    apply_scheduler_setting_changes() so the two never drift apart.
+
+    `time_str` is an "HH:MM" settings value (already normalized by config)."""
+    hour, minute = parse_cutoff_time(time_str)
+    return CronTrigger(hour=hour, minute=minute, timezone=settings.TIMEZONE)
 
 
 def apply_scheduler_setting_changes(changed_keys: Iterable[str]) -> None:
@@ -59,10 +63,10 @@ def apply_scheduler_setting_changes(changed_keys: Iterable[str]) -> None:
         job_id = _HOUR_SETTING_TO_JOB.get(key)
         if job_id is None:
             continue
-        hour = getattr(settings, key)
+        time_str = getattr(settings, key)
         try:
-            scheduler.reschedule_job(job_id, trigger=_hour_trigger(hour))
-            logger.info("scheduler_job_rescheduled", job_id=job_id, hour=hour)
+            scheduler.reschedule_job(job_id, trigger=_time_trigger(time_str))
+            logger.info("scheduler_job_rescheduled", job_id=job_id, time=time_str)
         except Exception:
             logger.exception("scheduler_reschedule_failed", job_id=job_id)
 
@@ -94,7 +98,7 @@ def create_scheduler() -> AsyncIOScheduler:
     # Run at the configured reminder hour — reminds users of today's sessions
     scheduler.add_job(
         send_same_day_reminders_job,
-        trigger=_hour_trigger(settings.SAME_DAY_REMINDER_HOUR),
+        trigger=_time_trigger(settings.SAME_DAY_REMINDER_HOUR),
         id="same_day_reminders",
         replace_existing=True,
         max_instances=1,
@@ -124,7 +128,7 @@ def create_scheduler() -> AsyncIOScheduler:
     # Run at the configured broadcast hour — publishes today's schedule to each channel
     scheduler.add_job(
         send_daily_schedule_job,
-        trigger=_hour_trigger(settings.DAILY_BROADCAST_HOUR),
+        trigger=_time_trigger(settings.DAILY_BROADCAST_HOUR),
         id="daily_broadcast",
         replace_existing=True,
         max_instances=1,
@@ -144,7 +148,7 @@ def create_scheduler() -> AsyncIOScheduler:
     # Run at the configured hour — DM users overdue for a reservation reminder
     scheduler.add_job(
         send_inactivity_reminders_job,
-        trigger=_hour_trigger(settings.INACTIVITY_REMINDER_HOUR),
+        trigger=_time_trigger(settings.INACTIVITY_REMINDER_HOUR),
         id="inactivity_reminders",
         replace_existing=True,
         max_instances=1,

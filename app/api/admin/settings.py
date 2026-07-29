@@ -64,6 +64,7 @@ async def get_settings_metadata(
                 placeholder=meta.placeholder,
                 restart_behavior=meta.restart_behavior.value,
                 runtime_safe=meta.runtime_safe,
+                widget=meta.widget,
             )
         )
     return [

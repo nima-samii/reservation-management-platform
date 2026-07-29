@@ -16,6 +16,7 @@ class SettingFieldMetaOut(BaseModel):
     placeholder: Optional[str] = None
     restart_behavior: str
     runtime_safe: bool
+    widget: Optional[str] = None
 
 
 class SettingCategoryMetaOut(BaseModel):
