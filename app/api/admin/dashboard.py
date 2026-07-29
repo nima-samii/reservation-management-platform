@@ -81,9 +81,15 @@ async def get_dashboard_stats(
     ).scalar() or 0
 
     # ── Fill rate per channel ─────────────────────────────────────────────
+    # Order by priority (then name) so the dashboard matches the Channels page
+    # and the reservation flow, both of which use ChannelRepository ordering.
     channels = list(
         (
-            await session.execute(select(Channel).where(Channel.is_active.is_(True)))
+            await session.execute(
+                select(Channel)
+                .where(Channel.is_active.is_(True))
+                .order_by(Channel.priority.asc(), Channel.name.asc())
+            )
         ).scalars().all()
     )
     fill_rate_list = []
