@@ -99,12 +99,25 @@ async def get_dashboard_stats(
                 )
             )
         ).scalar() or 0
-        fill_pct = round(booked / ch.capacity, 4) if ch.capacity > 0 else 0.0
+        # Real per-day capacity is the number of slots actually generated for
+        # this channel today — driven by the slot-schedule settings
+        # (SLOT_START_HOUR/SLOT_END_HOUR/SLOT_DURATION_MINUTES + final slot).
+        # The static Channel.capacity column (default 100) is NOT the capacity;
+        # using it here produced the bogus "/ 100" denominator on the dashboard.
+        capacity = (
+            await session.execute(
+                select(func.count(ReservationSlot.id)).where(
+                    ReservationSlot.channel_id == ch.id,
+                    local_dt == today,
+                )
+            )
+        ).scalar() or 0
+        fill_pct = round(booked / capacity, 4) if capacity > 0 else 0.0
         fill_rate_list.append(
             {
                 "channel_id": str(ch.id),
                 "channel_name": ch.name,
-                "capacity": ch.capacity,
+                "capacity": capacity,
                 "booked": booked,
                 "fill_pct": fill_pct,
             }
