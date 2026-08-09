@@ -32,6 +32,40 @@ TIME_SETTING_KEYS = frozenset(
     }
 )
 
+# Reservation allocation strategies.
+#   THRESHOLD_UNLOCK — the historical behaviour: channel 1 is always offered and
+#     each following channel unlocks once the preceding one reaches
+#     CHANNEL_CAPACITY_THRESHOLD for that day. The user picks a concrete
+#     per-channel slot.
+#   SEQUENTIAL_FILL — every active channel participates from the start; the user
+#     sees one logical slot per time and the channel is resolved in priority
+#     order at booking time. CHANNEL_CAPACITY_THRESHOLD is ignored.
+# Declared here (not in settings_registry) because the Settings field validator
+# is the lowest-level consumer; the admin registry imports these so the UI can
+# never offer a value the validator would reject.
+RESERVATION_STRATEGY_THRESHOLD_UNLOCK = "THRESHOLD_UNLOCK"
+RESERVATION_STRATEGY_SEQUENTIAL_FILL = "SEQUENTIAL_FILL"
+RESERVATION_STRATEGIES: tuple[str, ...] = (
+    RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
+    RESERVATION_STRATEGY_SEQUENTIAL_FILL,
+)
+DEFAULT_RESERVATION_STRATEGY = RESERVATION_STRATEGY_THRESHOLD_UNLOCK
+
+
+def normalize_reservation_strategy(value: object) -> str:
+    """Coerce a raw strategy name to its canonical upper-case form.
+
+    Raises ValueError on anything unknown so a bad env value fails loudly at
+    construction; the override loader swallows the error and keeps the default.
+    """
+    text = str(value).strip().upper()
+    if text not in RESERVATION_STRATEGIES:
+        raise ValueError(
+            f"invalid reservation strategy: {value!r} "
+            f"(expected one of {', '.join(RESERVATION_STRATEGIES)})"
+        )
+    return text
+
 
 def normalize_time_setting(value: object) -> str:
     """Coerce a whole-hour int (or "14") or an "HH:MM" string to canonical "HH:MM".
@@ -103,6 +137,11 @@ class Settings(BaseSettings):
     # ── Reservation rules ─────────────────────────────────────────────────
     MAX_ACTIVE_RESERVATIONS: int = 10
     MAX_RESERVATION_DAYS_AHEAD: int = 14
+    # Which strategy decides what slots users are offered and which channel a
+    # booking lands on. Defaults to the historical behaviour so an upgrade is a
+    # no-op; see RESERVATION_STRATEGIES above.
+    RESERVATION_STRATEGY: str = DEFAULT_RESERVATION_STRATEGY
+    # Only consulted by THRESHOLD_UNLOCK.
     CHANNEL_CAPACITY_THRESHOLD: float = 0.70
     # Time (HH:MM, local timezone) after which same-day reservations are blocked.
     # Historically a bare hour int; a legacy int like 12 is normalized to "12:00".
@@ -268,6 +307,12 @@ class Settings(BaseSettings):
         """Normalize env/default values to "HH:MM" (accepts legacy bare hours)."""
         return normalize_time_setting(v)
 
+    @field_validator("RESERVATION_STRATEGY", mode="before")
+    @classmethod
+    def _normalize_reservation_strategy(cls, v: object) -> str:
+        """Canonicalize the strategy name and reject unknown values."""
+        return normalize_reservation_strategy(v)
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -289,10 +334,15 @@ def load_settings_override() -> None:
         try:
             if not hasattr(settings, key):
                 continue
-            # Persisted time overrides may be legacy bare-hour ints — canonicalize
-            # them here since object.__setattr__ bypasses the field validators.
+            # object.__setattr__ bypasses the field validators, so any key whose
+            # value needs canonicalizing or rejecting must be handled here too.
+            # Persisted time overrides may be legacy bare-hour ints; a persisted
+            # strategy must never reach the code path unvalidated (an unknown
+            # name would otherwise silently disable both strategies).
             if key in TIME_SETTING_KEYS:
                 value = normalize_time_setting(value)
+            elif key == "RESERVATION_STRATEGY":
+                value = normalize_reservation_strategy(value)
             object.__setattr__(settings, key, value)
         except Exception:
             continue  # one bad key must not drop the rest of the overrides

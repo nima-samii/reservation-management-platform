@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
+from app.core.config import DEFAULT_RESERVATION_STRATEGY, RESERVATION_STRATEGIES
+
 
 class RestartBehavior(str, Enum):
     LIVE = "live"
@@ -52,8 +54,23 @@ class SettingMeta:
     restart_behavior: RestartBehavior = RestartBehavior.LIVE
     runtime_safe: bool = True
     # Optional UI-widget hint for the admin panel. "time" renders a native
-    # HH:MM time picker; None falls back to the default input for value_type.
+    # HH:MM time picker; "select" renders a dropdown over `choices`; None falls
+    # back to the default input for value_type.
     widget: str | None = None
+    # (value, label) pairs for the "enum_choice" validator. Required by it and
+    # surfaced in /metadata so the panel's dropdown and the backend validator
+    # can never disagree about what is accepted. Tuple (not list) to keep the
+    # frozen dataclass hashable.
+    choices: tuple[tuple[str, str], ...] | None = None
+
+
+# Human-readable label per reservation strategy. Indexed by RESERVATION_STRATEGIES
+# rather than hand-listed so adding a strategy without a label fails loudly at
+# import instead of shipping a dropdown that silently omits it.
+_RESERVATION_STRATEGY_LABELS: dict[str, str] = {
+    "THRESHOLD_UNLOCK": "Threshold unlock — channels open one by one as they fill",
+    "SEQUENTIAL_FILL": "Sequential fill — one slot per time, channel picked automatically",
+}
 
 
 SETTINGS_REGISTRY: list[SettingMeta] = [
@@ -71,9 +88,32 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         value_type=int, example=14, validator="int_range", min=1, max=60,
     ),
     SettingMeta(
+        key="RESERVATION_STRATEGY", json_key="reservation_strategy",
+        category="reservation_rules", label="Reservation strategy",
+        description=(
+            "How slots are offered and which channel a booking lands on. "
+            "Threshold unlock: users pick a slot from a specific channel, and each "
+            "next channel opens once the previous one reaches the capacity threshold "
+            "below. Sequential fill: users see each time only once and the channel is "
+            "chosen automatically in priority order when they book — the capacity "
+            "threshold is not used. Only affects new bookings; existing reservations "
+            "keep the channel they were made on."
+        ),
+        value_type=str, example=DEFAULT_RESERVATION_STRATEGY, validator="enum_choice",
+        widget="select",
+        choices=tuple(
+            (value, _RESERVATION_STRATEGY_LABELS[value])
+            for value in RESERVATION_STRATEGIES
+        ),
+    ),
+    SettingMeta(
         key="CHANNEL_CAPACITY_THRESHOLD", json_key="channel_capacity_threshold",
         category="reservation_rules", label="Channel capacity threshold",
-        description="Fraction of channel 1's capacity at which the next channel becomes bookable.",
+        description=(
+            "Fraction of a channel's daily capacity at which the next channel becomes "
+            "bookable. Only used by the Threshold unlock strategy — ignored under "
+            "Sequential fill."
+        ),
         value_type=float, example=0.70, validator="float_range", min=0.1, max=1.0,
         placeholder="0.70",
     ),
@@ -316,6 +356,19 @@ def _validate_hh_mm_time(meta: SettingMeta, raw: Any) -> str:
     return value
 
 
+def _validate_enum_choice(meta: SettingMeta, raw: Any) -> str:
+    """Accept only one of meta.choices, case-insensitively, returning the
+    canonical value. Matching is on the choice *value*, never the label."""
+    if not meta.choices:
+        raise ValueError(f"{meta.json_key}: no choices configured")
+    text = str(raw).strip().upper()
+    for value, _label in meta.choices:
+        if value.upper() == text:
+            return value
+    allowed = ", ".join(value for value, _ in meta.choices)
+    raise ValueError(f"{meta.json_key}: expected one of {allowed}")
+
+
 def _validate_telegram_channel_id_optional(meta: SettingMeta, raw: Any) -> int | None:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
@@ -335,6 +388,7 @@ _VALIDATORS: dict[str, Callable[[SettingMeta, Any], Any]] = {
     "positive_int": _validate_positive_int,
     "cron_hour": _validate_cron_hour,
     "hh_mm_time": _validate_hh_mm_time,
+    "enum_choice": _validate_enum_choice,
     "telegram_channel_id_optional": _validate_telegram_channel_id_optional,
 }
 

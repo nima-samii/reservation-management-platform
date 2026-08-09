@@ -189,6 +189,38 @@ function TimeInput({
   );
 }
 
+function SelectInput({
+  meta,
+  value,
+  error,
+  onChange,
+}: {
+  meta: SettingFieldMeta;
+  value: string;
+  error?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <FieldLabel meta={meta} />
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full bg-gray-800 border text-white text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 ${
+          error ? "border-red-600 focus:ring-red-600" : "border-gray-700 focus:ring-indigo-500"
+        }`}
+      >
+        {(meta.choices ?? []).map((choice) => (
+          <option key={choice.value} value={choice.value}>
+            {choice.label}
+          </option>
+        ))}
+      </select>
+      {error && <p className="text-xs text-red-400 mt-0.5">{error}</p>}
+    </div>
+  );
+}
+
 function ToggleInput({
   meta,
   value,
@@ -242,6 +274,9 @@ function SettingField({
   }
   if (meta.widget === "time") {
     return <TimeInput meta={meta} value={value === null ? "" : String(value)} error={error} onChange={onChange} />;
+  }
+  if (meta.widget === "select") {
+    return <SelectInput meta={meta} value={String(value ?? "")} error={error} onChange={onChange} />;
   }
   if (NULLABLE_TEXT_FIELDS.has(meta.key)) {
     return <TextInput meta={meta} value={value === null ? "" : String(value)} error={error} onChange={onChange} />;

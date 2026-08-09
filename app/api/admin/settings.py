@@ -10,6 +10,7 @@ from app.api.admin.deps import get_current_admin
 from app.api.admin.schemas.settings import (
     MembershipChannelsBody,
     SettingCategoryMetaOut,
+    SettingChoiceOut,
     SettingFieldMetaOut,
 )
 from app.cache.client import redis_client
@@ -65,6 +66,14 @@ async def get_settings_metadata(
                 restart_behavior=meta.restart_behavior.value,
                 runtime_safe=meta.runtime_safe,
                 widget=meta.widget,
+                choices=(
+                    [
+                        SettingChoiceOut(value=value, label=label)
+                        for value, label in meta.choices
+                    ]
+                    if meta.choices
+                    else None
+                ),
             )
         )
     return [

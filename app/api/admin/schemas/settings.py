@@ -5,6 +5,13 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
+class SettingChoiceOut(BaseModel):
+    """One option of a `select`-widget setting. `value` is what PATCH accepts."""
+
+    value: str
+    label: str
+
+
 class SettingFieldMetaOut(BaseModel):
     key: str
     label: str
@@ -17,6 +24,7 @@ class SettingFieldMetaOut(BaseModel):
     restart_behavior: str
     runtime_safe: bool
     widget: Optional[str] = None
+    choices: Optional[list[SettingChoiceOut]] = None
 
 
 class SettingCategoryMetaOut(BaseModel):

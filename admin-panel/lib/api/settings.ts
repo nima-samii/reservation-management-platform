@@ -3,6 +3,11 @@ import { api } from "@/lib/api";
 export type RestartBehavior = "live" | "cache_refresh" | "scheduler_restart" | "restart_required";
 export type FieldType = "bool" | "int" | "float" | "str";
 
+export interface SettingChoice {
+  value: string;
+  label: string;
+}
+
 export interface SettingFieldMeta {
   key: string;
   label: string;
@@ -15,6 +20,9 @@ export interface SettingFieldMeta {
   restart_behavior: RestartBehavior;
   runtime_safe: boolean;
   widget: string | null;
+  // Populated only for `select` fields; the dropdown options come from the
+  // backend registry so the UI can never offer a value PATCH would reject.
+  choices: SettingChoice[] | null;
 }
 
 export interface SettingCategoryMeta {

@@ -32,6 +32,11 @@ export function validateFieldValue(
   if (meta.widget === "time") {
     if (!HH_MM_RE.test(str)) return "Expected a 24-hour HH:MM time, e.g. 23:59";
   }
+  if (meta.choices && meta.choices.length > 0) {
+    if (!meta.choices.some((c) => c.value === str)) {
+      return `${meta.label} must be one of: ${meta.choices.map((c) => c.value).join(", ")}`;
+    }
+  }
   return null;
 }
 

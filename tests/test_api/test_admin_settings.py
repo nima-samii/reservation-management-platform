@@ -17,7 +17,9 @@ import app.api.admin.settings as settings_mod
 from app.api.admin.deps import get_current_admin
 from app.api.main import create_app
 from app.core.config import (
+    DEFAULT_RESERVATION_STRATEGY,
     MAX_REQUIRED_CHANNELS,
+    RESERVATION_STRATEGIES,
     load_settings_override,
     save_settings_override,
     settings,
@@ -223,6 +225,120 @@ async def test_patch_non_scheduler_setting_does_not_reschedule(client, monkeypat
     )
     assert resp.status_code == 200
     fake_scheduler.reschedule_job.assert_not_called()
+
+
+# ── Reservation strategy (Phase 1: configuration only) ────────────────────
+
+
+def test_reservation_strategy_defaults_to_threshold_unlock():
+    """The historical behaviour must remain the default — adding the setting
+    must not change how any existing deployment allocates reservations."""
+    assert DEFAULT_RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_metadata_exposes_strategy_as_select_with_choices(client):
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+
+    field = fields_by_key["reservation_strategy"]
+    assert field["widget"] == "select"
+    assert field["restart_behavior"] == RestartBehavior.LIVE.value
+    # The dropdown must offer exactly what the validator accepts — no more, no less.
+    assert [c["value"] for c in field["choices"]] == list(RESERVATION_STRATEGIES)
+    assert all(c["label"] for c in field["choices"])
+
+
+@pytest.mark.asyncio
+async def test_metadata_choices_absent_for_non_select_fields(client):
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+    assert fields_by_key["max_active_reservations"]["choices"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_settings_includes_strategy(client):
+    resp = await client.get("/api/admin/settings")
+    assert resp.json()["reservation_rules"]["reservation_strategy"] == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_to_sequential_fill_roundtrips(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "SEQUENTIAL_FILL"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reservation_rules"]["reservation_strategy"] == "SEQUENTIAL_FILL"
+
+    resp2 = await client.get("/api/admin/settings")
+    assert resp2.json()["reservation_rules"]["reservation_strategy"] == "SEQUENTIAL_FILL"
+    assert settings.RESERVATION_STRATEGY == "SEQUENTIAL_FILL"
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_is_case_insensitive_and_canonicalized(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "  sequential_fill  "}},
+    )
+    assert resp.status_code == 200
+    assert settings.RESERVATION_STRATEGY == "SEQUENTIAL_FILL"
+
+
+@pytest.mark.asyncio
+async def test_patch_unknown_strategy_422(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "ROUND_ROBIN"}},
+    )
+    assert resp.status_code == 422
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_does_not_touch_threshold(client):
+    """The two settings are independent — switching strategy must not rewrite
+    CHANNEL_CAPACITY_THRESHOLD, so switching back restores the old behaviour."""
+    before = settings.CHANNEL_CAPACITY_THRESHOLD
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "SEQUENTIAL_FILL"}},
+    )
+    assert resp.status_code == 200
+    assert settings.CHANNEL_CAPACITY_THRESHOLD == before
+
+
+def test_load_settings_override_applies_valid_strategy(tmp_path, monkeypatch):
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"RESERVATION_STRATEGY": "SEQUENTIAL_FILL"}), encoding="utf-8"
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.RESERVATION_STRATEGY == "SEQUENTIAL_FILL"
+
+
+def test_load_settings_override_rejects_unknown_strategy(tmp_path, monkeypatch):
+    """object.__setattr__ bypasses the pydantic validator, so a hand-edited or
+    corrupt override must not be able to install a strategy no resolver knows —
+    and must not take the rest of the file down with it."""
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps(
+            {"RESERVATION_STRATEGY": "NONSENSE", "RATE_LIMIT_WINDOW_SECONDS": 88}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+    assert settings.RATE_LIMIT_WINDOW_SECONDS == 88
 
 
 # ── Membership channels ───────────────────────────────────────────────────
