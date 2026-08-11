@@ -6,18 +6,24 @@ data/admin_settings_override.json. `settings` is a process-wide mutable
 singleton that PATCH endpoints mutate in place, so an autouse fixture
 snapshots/restores every registry-tracked field around each test.
 """
+import dataclasses
 import json
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import app.api.admin.settings as settings_mod
+import app.core.settings_registry as settings_mod_registry
 from app.api.admin.deps import get_current_admin
 from app.api.main import create_app
 from app.core.config import (
+    DEFAULT_RESERVATION_STRATEGY,
     MAX_REQUIRED_CHANNELS,
+    RESERVATION_STRATEGIES,
+    SELECTABLE_RESERVATION_STRATEGIES,
     load_settings_override,
     save_settings_override,
     settings,
@@ -223,6 +229,286 @@ async def test_patch_non_scheduler_setting_does_not_reschedule(client, monkeypat
     )
     assert resp.status_code == 200
     fake_scheduler.reschedule_job.assert_not_called()
+
+
+# ── Reservation strategy ──────────────────────────────────────────────────
+
+
+def _unimplemented_strategies() -> list[str]:
+    """Known strategy names that are not yet selectable, or skip the test.
+
+    Every strategy currently ships implemented, so the guards below have
+    nothing to bite on. They are kept rather than deleted because the
+    invariant is permanent — the moment a new name is added to
+    RESERVATION_STRATEGIES ahead of its booking path, these reactivate on
+    their own and hold it to being hidden and rejected everywhere.
+    """
+    unimplemented = sorted(
+        set(RESERVATION_STRATEGIES) - set(SELECTABLE_RESERVATION_STRATEGIES)
+    )
+    if not unimplemented:
+        pytest.skip("every known strategy is selectable — nothing to guard yet")
+    return unimplemented
+
+
+def test_reservation_strategy_defaults_to_threshold_unlock():
+    """The historical behaviour must remain the default — adding the setting
+    must not change how any existing deployment allocates reservations."""
+    assert DEFAULT_RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_metadata_exposes_strategy_as_select_with_choices(client):
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+
+    field = fields_by_key["reservation_strategy"]
+    assert field["widget"] == "select"
+    assert field["restart_behavior"] == RestartBehavior.LIVE.value
+    # The dropdown must offer exactly what the validator accepts — no more, no less.
+    assert [c["value"] for c in field["choices"]] == list(
+        SELECTABLE_RESERVATION_STRATEGIES
+    )
+    assert all(c["label"] for c in field["choices"])
+
+
+@pytest.mark.asyncio
+async def test_metadata_hides_unimplemented_strategies(client):
+    """A strategy with no booking path must not be offered — an admin picking
+    it would break the reservation flow rather than change it."""
+    unimplemented = _unimplemented_strategies()
+
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+    offered = {c["value"] for c in fields_by_key["reservation_strategy"]["choices"]}
+
+    assert not (offered & unimplemented)
+
+
+@pytest.mark.asyncio
+async def test_metadata_choices_absent_for_non_select_fields(client):
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+    assert fields_by_key["max_active_reservations"]["choices"] is None
+
+
+@pytest.mark.asyncio
+async def test_metadata_marks_the_threshold_as_strategy_dependent(client):
+    """The panel has no way to know CHANNEL_CAPACITY_THRESHOLD does nothing
+    under Sequential fill unless the registry says so. Without this it renders a
+    knob that silently has no effect."""
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+
+    assert fields_by_key["channel_capacity_threshold"]["applies_when"] == {
+        "field": "reservation_strategy",
+        "value": "THRESHOLD_UNLOCK",
+    }
+    assert fields_by_key["max_active_reservations"]["applies_when"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_dependent_setting_stays_editable_while_it_is_inert(client):
+    """Advisory, not enforcement. An admin has to be able to set the threshold
+    *before* switching back to the strategy that uses it, and a value saved
+    under the other strategy must survive rather than be rejected or reset."""
+    await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "SEQUENTIAL_FILL"}},
+    )
+
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"channel_capacity_threshold": 0.55}},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["reservation_rules"]["channel_capacity_threshold"] == 0.55
+
+
+def test_applies_when_references_are_checked_at_import():
+    """The guard has no runtime symptom — a dangling reference just means the
+    panel never greys the field out — so prove it actually fires."""
+    from app.core.settings_registry import (
+        BY_JSON_KEY,
+        SETTINGS_REGISTRY,
+        _check_applies_when,
+    )
+
+    for meta in SETTINGS_REGISTRY:
+        if meta.applies_when:
+            assert meta.applies_when[0] in BY_JSON_KEY
+
+    broken = dataclasses.replace(
+        BY_JSON_KEY["channel_capacity_threshold"],
+        applies_when=("no_such_setting", "X"),
+    )
+    with mock.patch.object(settings_mod_registry, "SETTINGS_REGISTRY", [broken]):
+        with pytest.raises(RuntimeError, match="unknown setting"):
+            _check_applies_when()
+
+    wrong_value = dataclasses.replace(
+        BY_JSON_KEY["channel_capacity_threshold"],
+        applies_when=("reservation_strategy", "NOT_A_STRATEGY"),
+    )
+    with mock.patch.object(settings_mod_registry, "SETTINGS_REGISTRY", [wrong_value]):
+        with pytest.raises(RuntimeError, match="not one of its choices"):
+            _check_applies_when()
+
+
+@pytest.mark.asyncio
+async def test_get_settings_includes_strategy(client):
+    resp = await client.get("/api/admin/settings")
+    assert resp.json()["reservation_rules"]["reservation_strategy"] == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_roundtrips(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "THRESHOLD_UNLOCK"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reservation_rules"]["reservation_strategy"] == "THRESHOLD_UNLOCK"
+
+    resp2 = await client.get("/api/admin/settings")
+    assert resp2.json()["reservation_rules"]["reservation_strategy"] == "THRESHOLD_UNLOCK"
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_unimplemented_strategy_is_rejected(client):
+    """Hiding it from the dropdown is not enough — a direct API call must be
+    refused too, or the bot ends up configured into a path that does not exist."""
+    unimplemented = _unimplemented_strategies()
+
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": unimplemented[0]}},
+    )
+    assert resp.status_code == 422
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_to_sequential_fill_roundtrips(client):
+    """SEQUENTIAL_FILL is now a real, selectable strategy — the switch an admin
+    flips to change how channels are allocated."""
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "SEQUENTIAL_FILL"}},
+    )
+    assert resp.status_code == 200
+    assert settings.RESERVATION_STRATEGY == "SEQUENTIAL_FILL"
+
+    resp2 = await client.get("/api/admin/settings")
+    assert resp2.json()["reservation_rules"]["reservation_strategy"] == "SEQUENTIAL_FILL"
+
+
+@pytest.mark.asyncio
+async def test_every_selectable_strategy_is_buildable(client):
+    """The dropdown and the resolver must not drift apart.
+
+    Offering a name the resolver cannot build is the exact failure the
+    SELECTABLE_ gate exists to prevent, so assert it directly rather than
+    trusting that both lists were updated together.
+    """
+    from unittest.mock import MagicMock
+
+    from app.services.strategies.resolver import get_reservation_strategy
+
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+    offered = [c["value"] for c in fields_by_key["reservation_strategy"]["choices"]]
+
+    assert offered  # a dropdown with no options would pass everything below
+    for value in offered:
+        strategy = get_reservation_strategy(
+            slot_repo=MagicMock(), channel_repo=MagicMock(), name=value
+        )
+        assert strategy.name == value
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_is_case_insensitive_and_canonicalized(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "  threshold_unlock  "}},
+    )
+    assert resp.status_code == 200
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_unknown_strategy_422(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "ROUND_ROBIN"}},
+    )
+    assert resp.status_code == 422
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_does_not_touch_threshold(client):
+    """The two settings are independent — switching strategy must not rewrite
+    CHANNEL_CAPACITY_THRESHOLD, so switching back restores the old behaviour."""
+    before = settings.CHANNEL_CAPACITY_THRESHOLD
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "threshold_unlock"}},
+    )
+    assert resp.status_code == 200
+    assert settings.CHANNEL_CAPACITY_THRESHOLD == before
+
+
+def test_load_settings_override_applies_valid_strategy(tmp_path, monkeypatch):
+    # Lower-case on purpose: the loader must normalise, not just copy.
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"RESERVATION_STRATEGY": "threshold_unlock"}), encoding="utf-8"
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+def test_load_settings_override_rejects_unimplemented_strategy(tmp_path, monkeypatch):
+    """The override file is the one path that bypasses both the dropdown and
+    PATCH validation, so it needs the same guard."""
+    unimplemented = _unimplemented_strategies()
+
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"RESERVATION_STRATEGY": unimplemented[0]}), encoding="utf-8"
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+def test_load_settings_override_rejects_unknown_strategy(tmp_path, monkeypatch):
+    """object.__setattr__ bypasses the pydantic validator, so a hand-edited or
+    corrupt override must not be able to install a strategy no resolver knows —
+    and must not take the rest of the file down with it."""
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps(
+            {"RESERVATION_STRATEGY": "NONSENSE", "RATE_LIMIT_WINDOW_SECONDS": 88}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+    assert settings.RATE_LIMIT_WINDOW_SECONDS == 88
 
 
 # ── Membership channels ───────────────────────────────────────────────────

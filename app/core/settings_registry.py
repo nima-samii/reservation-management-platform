@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
+from app.core.config import (
+    DEFAULT_RESERVATION_STRATEGY,
+    RESERVATION_STRATEGIES,
+    RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
+    SELECTABLE_RESERVATION_STRATEGIES,
+)
+
 
 class RestartBehavior(str, Enum):
     LIVE = "live"
@@ -52,8 +59,45 @@ class SettingMeta:
     restart_behavior: RestartBehavior = RestartBehavior.LIVE
     runtime_safe: bool = True
     # Optional UI-widget hint for the admin panel. "time" renders a native
-    # HH:MM time picker; None falls back to the default input for value_type.
+    # HH:MM time picker; "select" renders a dropdown over `choices`; None falls
+    # back to the default input for value_type.
     widget: str | None = None
+    # (value, label) pairs for the "enum_choice" validator. Required by it and
+    # surfaced in /metadata so the panel's dropdown and the backend validator
+    # can never disagree about what is accepted. Tuple (not list) to keep the
+    # frozen dataclass hashable.
+    choices: tuple[tuple[str, str], ...] | None = None
+    # (json_key, value) of another setting this one only takes effect under.
+    # Surfaced in /metadata so the panel can grey the field out and say why,
+    # instead of showing a knob that silently does nothing.
+    #
+    # Deliberately advisory, not enforcement: PATCH still accepts the field
+    # while the condition is false. An admin has to be able to set the
+    # threshold *before* switching back to the strategy that uses it, and a
+    # value saved under the other strategy must survive the round trip rather
+    # than being rejected or reset.
+    applies_when: tuple[str, str] | None = None
+
+
+# Human-readable label per reservation strategy. Indexed by RESERVATION_STRATEGIES
+# rather than hand-listed so adding a strategy without a label fails loudly at
+# import instead of shipping a dropdown that silently omits it.
+_RESERVATION_STRATEGY_LABELS: dict[str, str] = {
+    "THRESHOLD_UNLOCK": "Threshold unlock — channels open one by one as they fill",
+    "SEQUENTIAL_FILL": "Sequential fill — one slot per time, channel picked automatically",
+}
+
+# Labelling every known strategy asserts each one has a label, including those
+# not yet selectable — so enabling one later can never ship a blank dropdown
+# entry. Only the selectable subset is then actually offered to the admin.
+_ALL_STRATEGY_LABELS: tuple[tuple[str, str], ...] = tuple(
+    (value, _RESERVATION_STRATEGY_LABELS[value]) for value in RESERVATION_STRATEGIES
+)
+_STRATEGY_CHOICES: tuple[tuple[str, str], ...] = tuple(
+    (value, label)
+    for value, label in _ALL_STRATEGY_LABELS
+    if value in SELECTABLE_RESERVATION_STRATEGIES
+)
 
 
 SETTINGS_REGISTRY: list[SettingMeta] = [
@@ -71,11 +115,32 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         value_type=int, example=14, validator="int_range", min=1, max=60,
     ),
     SettingMeta(
+        key="RESERVATION_STRATEGY", json_key="reservation_strategy",
+        category="reservation_rules", label="Reservation strategy",
+        description=(
+            "How slots are offered and which channel a booking lands on. "
+            "Threshold unlock: users pick a slot from a specific channel, and each "
+            "next channel opens once the previous one reaches the capacity threshold "
+            "below. Sequential fill: users see each time once and never choose a "
+            "channel — the booking goes to the highest-priority channel still free at "
+            "that time, so channels fill in order and the threshold below is ignored. "
+            "Only affects new bookings; existing reservations keep the channel they "
+            "were made on."
+        ),
+        value_type=str, example=DEFAULT_RESERVATION_STRATEGY, validator="enum_choice",
+        widget="select", choices=_STRATEGY_CHOICES,
+    ),
+    SettingMeta(
         key="CHANNEL_CAPACITY_THRESHOLD", json_key="channel_capacity_threshold",
         category="reservation_rules", label="Channel capacity threshold",
-        description="Fraction of channel 1's capacity at which the next channel becomes bookable.",
+        description=(
+            "Fraction of a channel's daily capacity at which the next channel becomes "
+            "bookable. Only used by the Threshold unlock strategy — ignored under "
+            "Sequential fill."
+        ),
         value_type=float, example=0.70, validator="float_range", min=0.1, max=1.0,
         placeholder="0.70",
+        applies_when=("reservation_strategy", RESERVATION_STRATEGY_THRESHOLD_UNLOCK),
     ),
     SettingMeta(
         key="SAME_DAY_CUTOFF_HOUR", json_key="same_day_cutoff_hour",
@@ -265,6 +330,32 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
 BY_JSON_KEY: dict[str, SettingMeta] = {m.json_key: m for m in SETTINGS_REGISTRY}
 BY_SETTINGS_KEY: dict[str, SettingMeta] = {m.key: m for m in SETTINGS_REGISTRY}
 
+
+def _check_applies_when() -> None:
+    """Fail at import if an ``applies_when`` names something that cannot exist.
+
+    A dangling reference has no visible symptom — the panel would simply never
+    grey the field out — so it would ship and stay shipped. Renaming a setting
+    or a strategy value breaks loudly here instead.
+    """
+    for meta in SETTINGS_REGISTRY:
+        if meta.applies_when is None:
+            continue
+        json_key, expected = meta.applies_when
+        target = BY_JSON_KEY.get(json_key)
+        if target is None:
+            raise RuntimeError(
+                f"{meta.json_key}.applies_when references unknown setting {json_key!r}"
+            )
+        if target.choices and expected not in {v for v, _ in target.choices}:
+            raise RuntimeError(
+                f"{meta.json_key}.applies_when expects {json_key}={expected!r}, "
+                f"which is not one of its choices"
+            )
+
+
+_check_applies_when()
+
 _HH_MM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _TELEGRAM_CHANNEL_URL_RE = re.compile(r"^https://t\.me/.+")
 
@@ -316,6 +407,19 @@ def _validate_hh_mm_time(meta: SettingMeta, raw: Any) -> str:
     return value
 
 
+def _validate_enum_choice(meta: SettingMeta, raw: Any) -> str:
+    """Accept only one of meta.choices, case-insensitively, returning the
+    canonical value. Matching is on the choice *value*, never the label."""
+    if not meta.choices:
+        raise ValueError(f"{meta.json_key}: no choices configured")
+    text = str(raw).strip().upper()
+    for value, _label in meta.choices:
+        if value.upper() == text:
+            return value
+    allowed = ", ".join(value for value, _ in meta.choices)
+    raise ValueError(f"{meta.json_key}: expected one of {allowed}")
+
+
 def _validate_telegram_channel_id_optional(meta: SettingMeta, raw: Any) -> int | None:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
@@ -335,6 +439,7 @@ _VALIDATORS: dict[str, Callable[[SettingMeta, Any], Any]] = {
     "positive_int": _validate_positive_int,
     "cron_hour": _validate_cron_hour,
     "hh_mm_time": _validate_hh_mm_time,
+    "enum_choice": _validate_enum_choice,
     "telegram_channel_id_optional": _validate_telegram_channel_id_optional,
 }
 

@@ -2,7 +2,6 @@ import uuid
 from datetime import datetime
 
 import pytz
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.client import RedisClient
@@ -22,6 +21,7 @@ from app.core.exceptions import (
 )
 from app.core.logging import get_logger
 from app.db.models.reservation import Reservation, ReservationStatus
+from app.repositories.channel import ChannelRepository
 from app.repositories.reservation import ReservationRepository
 from app.repositories.slot import SlotRepository
 from app.repositories.user import UserRepository
@@ -31,6 +31,9 @@ from app.schedulers.jobs.reservation_notification import (
 )
 from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.score import ParticipationScoreService
+from app.services.strategies.base import SlotRef, SlotResolutionStrategy
+from app.services.strategies.explicit import ExplicitSlotStrategy
+from app.services.strategies.resolver import get_reservation_strategy
 
 logger = get_logger(__name__)
 
@@ -44,26 +47,65 @@ class ReservationService:
         self._redis = redis
         self._res_repo = ReservationRepository(session)
         self._slot_repo = SlotRepository(session)
+        self._channel_repo = ChannelRepository(session)
         self._user_repo = UserRepository(session)
         self._score_svc = ParticipationScoreService(session)
 
     def _now_tz(self) -> datetime:
         return datetime.now(TZ)
 
-    async def _book(self, user_id: uuid.UUID, slot_id: uuid.UUID) -> Reservation:
+    @staticmethod
+    def _contended_resource(
+        user_id: uuid.UUID,
+        slot_ref: SlotRef,
+        strategy: SlotResolutionStrategy | None,
+    ) -> str:
+        """What the advisory lock in ``_book`` should serialise on.
+
+        Under identity resolution (no strategy, EXPLICIT, THRESHOLD_UNLOCK) the
+        booking claims exactly the referenced row, so that id is the contended
+        resource and the key is unchanged from before strategies existed.
+
+        A strategy that re-picks the row cannot use it. Every user referencing
+        a given time — whether by ``lslot:HH:MM`` or by the same representative
+        uuid — intends to land on a *different* row, so locking that shared
+        reference would reject a booking the database could have satisfied on
+        the next channel down. The row-level ``FOR UPDATE ... SKIP LOCKED`` is
+        the real serialisation point there, and it is per-row and therefore
+        exactly right.
+
+        Scoping the key to the user keeps the one guarantee the slot-id key
+        still provided: a double-tapped confirm button is one booking, not two
+        on two channels.
+        """
+        if strategy is None or strategy.resolves_by_identity:
+            return str(slot_ref)
+        return f"{user_id}:{slot_ref}"
+
+    async def _book(
+        self,
+        user_id: uuid.UUID,
+        slot_ref: SlotRef,
+        *,
+        strategy: SlotResolutionStrategy | None = None,
+    ) -> Reservation:
         """Slot-locked booking core shared by the user and admin entry points.
 
         Acquires the per-slot Redis lock, then delegates to ``_perform_booking``
         which is the single implementation of all booking validation, slot
         claiming and reservation creation. Neither entry point may bypass this.
+
+        Omitting ``strategy`` books exactly the referenced row. That default is
+        what keeps the admin path honest: it never passes a strategy, so no
+        configured strategy can reassign the channel an admin chose.
         """
-        lock_key = CacheKey.slot_lock(str(slot_id))
+        lock_key = CacheKey.slot_lock(self._contended_resource(user_id, slot_ref, strategy))
         lock_acquired = await self._redis.set_nx(lock_key, str(user_id), ttl=SLOT_LOCK_TTL)
         if not lock_acquired:
             raise SlotUnavailableError()
 
         try:
-            return await self._perform_booking(user_id, slot_id)
+            return await self._perform_booking(user_id, slot_ref, strategy=strategy)
         finally:
             await self._redis.delete(lock_key)
 
@@ -71,12 +113,25 @@ class ReservationService:
         self,
         *,
         telegram_id: int,
-        slot_id: uuid.UUID,
+        slot_ref: SlotRef,
     ) -> Reservation:
+        """Book on behalf of a Telegram user.
+
+        ``slot_ref`` is whatever the tapped button named — a physical slot id,
+        or a time when the configured strategy chooses the channel itself. The
+        two are not interchangeable, and it is the strategy that decides which
+        it can honour; see :data:`SlotRef`.
+        """
         user = await self._user_repo.get_by_telegram_id(telegram_id)
         if not user:
             raise NotFoundError("User")
-        return await self._book(user.id, slot_id)
+        # The user-facing flow is the only entry point that honours the
+        # configured strategy.
+        strategy = get_reservation_strategy(
+            slot_repo=self._slot_repo,
+            channel_repo=self._channel_repo,
+        )
+        return await self._book(user.id, slot_ref, strategy=strategy)
 
     async def admin_create_reservation(
         self,
@@ -93,6 +148,9 @@ class ReservationService:
         score reward. The only admin-specific additions are the up-front
         existence/ban checks and an out-of-band confirmation DM (the user is not
         in a chat flow, so unlike user booking there is no inline confirmation).
+
+        Deliberately passes no strategy: an admin picked the channel, and no
+        configured reservation strategy may override that choice.
         """
         user = await self._user_repo.get_by_id(user_id)
         if not user:
@@ -116,15 +174,17 @@ class ReservationService:
         return reservation
 
     async def _perform_booking(
-        self, user_id: uuid.UUID, slot_id: uuid.UUID
+        self,
+        user_id: uuid.UUID,
+        slot_ref: SlotRef,
+        *,
+        strategy: SlotResolutionStrategy | None = None,
     ) -> Reservation:
-        try:
-            slot = await self._slot_repo.get_slot_with_lock(slot_id)
-        except OperationalError:
-            raise SlotUnavailableError()
-
-        if not slot:
-            raise NotFoundError("Slot")
+        # Picking the physical slot is the only part of booking a strategy may
+        # change; everything below is shared and must stay identical for all of
+        # them. Defaults to booking exactly the referenced row.
+        resolution = strategy or ExplicitSlotStrategy(self._slot_repo)
+        slot = await resolution.resolve_slot(slot_ref)
 
         now = self._now_tz()
         if slot.slot_datetime <= now:

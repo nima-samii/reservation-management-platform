@@ -98,6 +98,22 @@ class UserBannedError(ReservationError):
         super().__init__("Cannot create a reservation for a banned user.")
 
 
+class UnsupportedReservationStrategyError(AppError):
+    """Raised when RESERVATION_STRATEGY names a strategy that cannot be built.
+
+    Deliberately fatal rather than falling back to a default: a strategy that
+    is configured but unusable must surface as an error, never as silently
+    different booking behaviour.
+    """
+
+    def __init__(self, strategy: str, reason: str) -> None:
+        super().__init__(
+            f"Reservation strategy {strategy!r} cannot be used: {reason}.",
+            "UNSUPPORTED_STRATEGY",
+        )
+        self.strategy = strategy
+
+
 class RateLimitError(AppError):
     def __init__(self) -> None:
         super().__init__("Too many requests. Please slow down.", "RATE_LIMITED")

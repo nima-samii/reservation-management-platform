@@ -68,11 +68,14 @@ export interface PaginatedReservations {
   summary: DaySummary;
 }
 
+// Mirrors ChannelOut from /admin/channels. `capacity` used to be listed here
+// but the endpoint has never returned it — the Channel.capacity column is
+// deprecated and a channel's real daily capacity is the number of slots
+// generated for it that day.
 export interface ChannelItem {
   id: string;
   name: string;
   telegram_channel_id: number;
-  capacity: number;
   priority: number;
   is_active: boolean;
 }

@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 import pytz
 from aiogram import F, Router
@@ -26,6 +26,7 @@ from app.db.models.user import User
 from app.repositories.slot import SlotRepository
 from app.services.reservation import ReservationService
 from app.services.slot import SlotService
+from app.services.strategies.base import SlotRef
 
 logger = get_logger(__name__)
 router = Router(name="reservation")
@@ -94,7 +95,11 @@ async def choose_date(
     await callback.message.edit_text(  # type: ignore[union-attr]
         f"🕐 *Available slots for {selected_date.strftime('%A, %d %B')}:*{subtitle}\n\n"
         "Select a time slot:",
-        reply_markup=build_slot_keyboard_grouped(grouped["recommended"], grouped["more_available"]),
+        reply_markup=build_slot_keyboard_grouped(
+            grouped["recommended"],
+            grouped["more_available"],
+            by_time=slot_svc.offers_slots_by_time(),
+        ),
         parse_mode="Markdown",
     )
     await state.set_state(ReservationSG.choose_slot)
@@ -121,6 +126,55 @@ async def back_to_dates(
     await state.set_state(ReservationSG.choose_date)
 
 
+async def _show_confirmation(callback: CallbackQuery, state: FSMContext, local_dt: datetime) -> None:
+    """Render the summary step. Identical for both callback forms — the user is
+    confirming a date and a time either way; which channel it lands on is not
+    something they were ever shown here."""
+    confirm_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Confirm", callback_data="reservation:confirm"),
+                InlineKeyboardButton(text="❌ Cancel", callback_data="reservation:cancel"),
+            ]
+        ]
+    )
+
+    await callback.message.edit_text(  # type: ignore[union-attr]
+        f"📋 *Reservation Summary*\n\n"
+        f"📅 Date: *{local_dt.strftime('%A, %d %B')}*\n"
+        f"🕐 Time: *{local_dt.strftime('%I:%M %p')}*\n\n"
+        "Confirm your reservation?",
+        reply_markup=confirm_kb,
+        parse_mode="Markdown",
+    )
+    await state.set_state(ReservationSG.confirm)
+
+
+def _slot_ref_from_state(data: dict) -> SlotRef | None:
+    """Recover what the user tapped, in whichever form it was stored.
+
+    Exactly one of the two keys is ever set — each handler clears the other —
+    so the order below is not a precedence rule, just a lookup. Returning None
+    covers both an empty FSM and an unparseable value; the caller treats both
+    as an expired session, which is what they are.
+    """
+    raw_time = data.get("slot_time")
+    if raw_time:
+        try:
+            return datetime.fromisoformat(raw_time)
+        except (TypeError, ValueError):
+            return None
+
+    raw_id = data.get("slot_id")
+    if raw_id:
+        try:
+            return uuid.UUID(raw_id)
+        except (TypeError, ValueError):
+            return None
+
+    return None
+
+
 @router.callback_query(ReservationSG.choose_slot, F.data.startswith("slot:"))
 async def choose_slot(
     callback: CallbackQuery,
@@ -128,6 +182,14 @@ async def choose_slot(
     session: AsyncSession,
     db_user: User | None,
 ) -> None:
+    """A button naming one physical slot row.
+
+    Still the live format under THRESHOLD_UNLOCK, and still accepted under
+    SEQUENTIAL_FILL — a user may have a keyboard from before the switch, and
+    that strategy reads such a reference for its time. Kept as its own handler
+    rather than folded into the logical one because the two really do carry
+    different information, and only this one can check the row exists up front.
+    """
     await callback.answer()
 
     if not db_user:
@@ -149,30 +211,50 @@ async def choose_slot(
         await callback.answer("This slot no longer exists.", show_alert=True)
         return
 
-    local_dt = slot.slot_datetime.astimezone(TZ)
-    date_str = local_dt.strftime("%A, %d %B")
-    time_str = local_dt.strftime("%I:%M %p")
+    await state.update_data(slot_id=str(slot_id), slot_time=None)
+    await _show_confirmation(callback, state, slot.slot_datetime.astimezone(TZ))
 
-    await state.update_data(slot_id=str(slot_id))
 
-    confirm_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Confirm", callback_data="reservation:confirm"),
-                InlineKeyboardButton(text="❌ Cancel", callback_data="reservation:cancel"),
-            ]
-        ]
-    )
+@router.callback_query(ReservationSG.choose_slot, F.data.startswith("lslot:"))
+async def choose_logical_slot(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db_user: User | None,
+) -> None:
+    """A button naming a local clock time, with the channel left to the booking.
 
-    await callback.message.edit_text(  # type: ignore[union-attr]
-        f"📋 *Reservation Summary*\n\n"
-        f"📅 Date: *{date_str}*\n"
-        f"🕐 Time: *{time_str}*\n\n"
-        "Confirm your reservation?",
-        reply_markup=confirm_kb,
-        parse_mode="Markdown",
-    )
-    await state.set_state(ReservationSG.confirm)
+    The date comes from the FSM rather than the callback. That is safe here and
+    not merely convenient: this handler is state-filtered on ``choose_slot``,
+    and the only transition into that state is ``choose_date``, which writes
+    ``selected_date`` in the same step. No date in state means no such
+    transition happened, which is an expired session.
+
+    Nothing is looked up yet. Which row this becomes is decided under a lock at
+    confirm time, and querying now would only produce an answer that is allowed
+    to be stale by the time it matters.
+    """
+    await callback.answer()
+
+    if not db_user:
+        await callback.answer("Please register first.", show_alert=True)
+        return
+
+    time_str = callback.data.split(":", 1)[1]  # type: ignore[union-attr]
+    data = await state.get_data()
+
+    try:
+        slot_date = date.fromisoformat(data.get("selected_date", ""))
+        hour, minute = (int(part) for part in time_str.split(":"))
+        local_dt = TZ.localize(
+            datetime(slot_date.year, slot_date.month, slot_date.day, hour, minute)
+        )
+    except (ValueError, TypeError):
+        await callback.answer("Session expired. Please start again.", show_alert=True)
+        await state.clear()
+        return
+
+    await state.update_data(slot_time=local_dt.isoformat(), slot_id=None)
+    await _show_confirmation(callback, state, local_dt)
 
 
 @router.callback_query(ReservationSG.confirm, F.data == "reservation:confirm")
@@ -189,11 +271,9 @@ async def confirm_reservation(
         return
 
     data = await state.get_data()
-    slot_id_str = data.get("slot_id", "")
+    slot_ref = _slot_ref_from_state(data)
 
-    try:
-        slot_id = uuid.UUID(slot_id_str)
-    except ValueError:
+    if slot_ref is None:
         await callback.answer("Session expired. Please start again.", show_alert=True)
         await state.clear()
         return
@@ -203,7 +283,7 @@ async def confirm_reservation(
     try:
         reservation = await svc.book_slot(
             telegram_id=db_user.telegram_id,
-            slot_id=slot_id,
+            slot_ref=slot_ref,
         )
     except SlotUnavailableError:
         fsm_data = await state.get_data()

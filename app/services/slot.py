@@ -1,6 +1,5 @@
 import uuid
 from datetime import date, datetime, timedelta
-from typing import TypedDict
 
 import pytz
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,15 +10,14 @@ from app.core.logging import get_logger
 from app.db.models.slot import ReservationSlot
 from app.repositories.channel import ChannelRepository
 from app.repositories.slot import SlotRepository
+from app.services.strategies.base import GroupedSlots
+from app.services.strategies.resolver import get_reservation_strategy
 
 logger = get_logger(__name__)
 
 TZ = pytz.timezone(settings.TIMEZONE)
 
-
-class GroupedSlots(TypedDict):
-    recommended: list[ReservationSlot]
-    more_available: list[ReservationSlot]
+__all__ = ["GroupedSlots", "SlotService"]
 
 
 class SlotService:
@@ -123,55 +121,44 @@ class SlotService:
         return results
 
     async def get_available_slots_for_date_grouped(self, slot_date: date) -> GroupedSlots:
-        """
-        Returns slots grouped into two sections:
-        - recommended: Channel 1 (always open) available slots
-        - more_available: Channel 2+ slots, unlocked when the preceding channel
-          reaches CHANNEL_CAPACITY_THRESHOLD fill ratio for that day
+        """Slots offered for a date, grouped into the two keyboard sections.
 
-        Returns empty groups when the same-day cutoff has passed for today.
+        The same-day cutoff is a shared reservation rule — it holds for every
+        strategy and is also re-checked at booking time — so it is enforced
+        here, before delegating. What is left is the strategy's own decision:
+        which channels are open and which of their slots to offer.
         """
-        threshold = settings.CHANNEL_CAPACITY_THRESHOLD
         now = self._now_tz()
 
         if is_same_day_cutoff_passed(slot_date, now, settings.SAME_DAY_CUTOFF_HOUR):
             return GroupedSlots(recommended=[], more_available=[])
-        channels = await self._channel_repo.get_active_channels_ordered()
 
-        recommended: list[ReservationSlot] = []
-        more_available: list[ReservationSlot] = []
-        next_channel_unlocked = False
+        # Built per call, not cached on the service: the admin panel mutates the
+        # settings singleton at runtime, so the strategy must be re-read rather
+        # than frozen at construction time.
+        strategy = get_reservation_strategy(
+            slot_repo=self._repo,
+            channel_repo=self._channel_repo,
+            config=settings,
+        )
+        return await strategy.list_bookable_slots(slot_date, now=now)
 
-        for i, channel in enumerate(channels):
-            if i > 0 and not next_channel_unlocked:
-                break
+    def offers_slots_by_time(self) -> bool:
+        """Whether a slot button should name a *time* rather than a slot row.
 
-            slots = await self._repo.get_available_slots_for_date_and_channel(
-                slot_date, channel.id, now
-            )
-            booked = await self._channel_repo.get_reservation_count_for_date(
-                channel.id, slot_date
-            )
-            # Real per-day capacity is the number of slots actually generated for
-            # this channel on this date — NOT the settings-derived _slots_per_day().
-            # The latter recomputes from the current SLOT_* settings, so tightening
-            # the schedule after slots were generated shrinks the denominator and
-            # unlocks the next channel far too early. (Same bug class as the
-            # dashboard "/ 100" capacity fix.) A channel with no slots that day
-            # (capacity 0) is treated as "full" so the next channel still unlocks
-            # and the user is never left with an empty list.
-            capacity = await self._repo.count_slots_for_date_and_channel(
-                slot_date, channel.id
-            )
-            fill_ratio = booked / capacity if capacity > 0 else 1.0
-            next_channel_unlocked = fill_ratio >= threshold
-
-            if i == 0:
-                recommended.extend(slots)
-            else:
-                more_available.extend(slots)
-
-        return GroupedSlots(recommended=recommended, more_available=more_available)
+        A button has to name whatever the configured strategy is going to
+        resolve, so this is the same question as ``resolves_by_identity`` — read
+        from the strategy rather than from ``RESERVATION_STRATEGY`` so the
+        keyboard and the booking path can never disagree about the callback
+        format. Built per call for the same reason as the listing above: the
+        admin panel can switch strategies at runtime.
+        """
+        strategy = get_reservation_strategy(
+            slot_repo=self._repo,
+            channel_repo=self._channel_repo,
+            config=settings,
+        )
+        return not strategy.resolves_by_identity
 
     async def get_available_dates(self) -> list[date]:
         now = self._now_tz()

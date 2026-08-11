@@ -76,14 +76,3 @@ class PaginatedReservations(BaseModel):
     page: int
     pages: int
     summary: DaySummary
-
-
-class ChannelListItem(BaseModel):
-    id: uuid.UUID
-    name: str
-    telegram_channel_id: int
-    capacity: int
-    priority: int
-    is_active: bool
-
-    model_config = {"from_attributes": True}
