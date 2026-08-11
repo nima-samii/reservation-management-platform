@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
-from app.core.config import DEFAULT_RESERVATION_STRATEGY, RESERVATION_STRATEGIES
+from app.core.config import (
+    DEFAULT_RESERVATION_STRATEGY,
+    RESERVATION_STRATEGIES,
+    SELECTABLE_RESERVATION_STRATEGIES,
+)
 
 
 class RestartBehavior(str, Enum):
@@ -72,6 +76,18 @@ _RESERVATION_STRATEGY_LABELS: dict[str, str] = {
     "SEQUENTIAL_FILL": "Sequential fill — one slot per time, channel picked automatically",
 }
 
+# Labelling every known strategy asserts each one has a label, including those
+# not yet selectable — so enabling one later can never ship a blank dropdown
+# entry. Only the selectable subset is then actually offered to the admin.
+_ALL_STRATEGY_LABELS: tuple[tuple[str, str], ...] = tuple(
+    (value, _RESERVATION_STRATEGY_LABELS[value]) for value in RESERVATION_STRATEGIES
+)
+_STRATEGY_CHOICES: tuple[tuple[str, str], ...] = tuple(
+    (value, label)
+    for value, label in _ALL_STRATEGY_LABELS
+    if value in SELECTABLE_RESERVATION_STRATEGIES
+)
+
 
 SETTINGS_REGISTRY: list[SettingMeta] = [
     # ── Reservations ──────────────────────────────────────────────────────
@@ -94,17 +110,11 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
             "How slots are offered and which channel a booking lands on. "
             "Threshold unlock: users pick a slot from a specific channel, and each "
             "next channel opens once the previous one reaches the capacity threshold "
-            "below. Sequential fill: users see each time only once and the channel is "
-            "chosen automatically in priority order when they book — the capacity "
-            "threshold is not used. Only affects new bookings; existing reservations "
-            "keep the channel they were made on."
+            "below. Only affects new bookings; existing reservations keep the channel "
+            "they were made on. Further strategies appear here as they ship."
         ),
         value_type=str, example=DEFAULT_RESERVATION_STRATEGY, validator="enum_choice",
-        widget="select",
-        choices=tuple(
-            (value, _RESERVATION_STRATEGY_LABELS[value])
-            for value in RESERVATION_STRATEGIES
-        ),
+        widget="select", choices=_STRATEGY_CHOICES,
     ),
     SettingMeta(
         key="CHANNEL_CAPACITY_THRESHOLD", json_key="channel_capacity_threshold",

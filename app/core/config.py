@@ -45,24 +45,43 @@ TIME_SETTING_KEYS = frozenset(
 # never offer a value the validator would reject.
 RESERVATION_STRATEGY_THRESHOLD_UNLOCK = "THRESHOLD_UNLOCK"
 RESERVATION_STRATEGY_SEQUENTIAL_FILL = "SEQUENTIAL_FILL"
+
+# Every strategy name the system knows about, implemented or not.
 RESERVATION_STRATEGIES: tuple[str, ...] = (
     RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
     RESERVATION_STRATEGY_SEQUENTIAL_FILL,
 )
+
+# The subset that is actually implemented and therefore safe to configure.
+# This is the ONE place that gates availability: it drives the admin dropdown,
+# PATCH validation, env parsing and the override loader alike, so a strategy
+# cannot be selected anywhere until its booking path exists. Adding
+# SEQUENTIAL_FILL here is the switch that turns it on once implemented.
+SELECTABLE_RESERVATION_STRATEGIES: tuple[str, ...] = (
+    RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
+)
+
 DEFAULT_RESERVATION_STRATEGY = RESERVATION_STRATEGY_THRESHOLD_UNLOCK
 
 
 def normalize_reservation_strategy(value: object) -> str:
     """Coerce a raw strategy name to its canonical upper-case form.
 
-    Raises ValueError on anything unknown so a bad env value fails loudly at
-    construction; the override loader swallows the error and keeps the default.
+    Raises ValueError on anything not currently selectable so a bad env value
+    fails loudly at construction; the override loader swallows the error and
+    keeps the default. A name that is known but not yet implemented gets its
+    own message — "not available yet" is a very different fix from a typo.
     """
     text = str(value).strip().upper()
-    if text not in RESERVATION_STRATEGIES:
+    if text not in SELECTABLE_RESERVATION_STRATEGIES:
+        if text in RESERVATION_STRATEGIES:
+            raise ValueError(
+                f"reservation strategy {text} is not available yet "
+                f"(available: {', '.join(SELECTABLE_RESERVATION_STRATEGIES)})"
+            )
         raise ValueError(
             f"invalid reservation strategy: {value!r} "
-            f"(expected one of {', '.join(RESERVATION_STRATEGIES)})"
+            f"(expected one of {', '.join(SELECTABLE_RESERVATION_STRATEGIES)})"
         )
     return text
 
