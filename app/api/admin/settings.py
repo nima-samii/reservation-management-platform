@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.admin.deps import get_current_admin
 from app.api.admin.schemas.settings import (
     MembershipChannelsBody,
+    SettingAppliesWhenOut,
     SettingCategoryMetaOut,
     SettingChoiceOut,
     SettingFieldMetaOut,
@@ -72,6 +73,13 @@ async def get_settings_metadata(
                         for value, label in meta.choices
                     ]
                     if meta.choices
+                    else None
+                ),
+                applies_when=(
+                    SettingAppliesWhenOut(
+                        field=meta.applies_when[0], value=meta.applies_when[1]
+                    )
+                    if meta.applies_when
                     else None
                 ),
             )

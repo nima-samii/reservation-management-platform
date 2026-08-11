@@ -2,6 +2,7 @@ from app.services.strategies.base import (
     GroupedSlots,
     ReservationStrategy,
     SlotListingStrategy,
+    SlotRef,
     SlotResolutionStrategy,
 )
 from app.services.strategies.explicit import ExplicitSlotStrategy
@@ -15,6 +16,7 @@ __all__ = [
     "ReservationStrategy",
     "SequentialFillStrategy",
     "SlotListingStrategy",
+    "SlotRef",
     "SlotResolutionStrategy",
     "ThresholdUnlockStrategy",
     "get_reservation_strategy",

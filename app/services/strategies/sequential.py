@@ -14,7 +14,6 @@ channels fill strictly in priority order with no ratio to tune.
 """
 from __future__ import annotations
 
-import uuid
 from datetime import date, datetime
 from typing import Any
 
@@ -22,7 +21,7 @@ from app.core.config import RESERVATION_STRATEGY_SEQUENTIAL_FILL, settings
 from app.core.exceptions import NotFoundError, SlotUnavailableError
 from app.db.models.slot import ReservationSlot
 from app.repositories.slot import SlotRepository
-from app.services.strategies.base import GroupedSlots
+from app.services.strategies.base import GroupedSlots, SlotRef
 
 
 class SequentialFillStrategy:
@@ -62,21 +61,29 @@ class SequentialFillStrategy:
         slots = await self._repo.get_distinct_open_slots_for_date(slot_date, now)
         return GroupedSlots(recommended=slots, more_available=[])
 
-    async def resolve_slot(self, slot_id: uuid.UUID) -> ReservationSlot:
-        """Book the highest-priority channel still free at the tapped time.
+    async def resolve_slot(self, slot_ref: SlotRef) -> ReservationSlot:
+        """Book the highest-priority channel still free at the referenced time.
 
-        The tapped slot is read only for its ``slot_datetime`` — deliberately
-        without a lock, since it is a representative and holding it would
-        block a booking that is going to claim a different row anyway. Its
-        own channel and ``is_booked`` state are irrelevant: whatever it was
-        when the keyboard was rendered, the row that gets booked is decided
-        now, by priority, against current state.
+        Both :data:`SlotRef` shapes reduce to a ``slot_datetime``:
+
+        * a ``datetime`` (``lslot:HH:MM``) *is* the answer, and needs no query;
+        * a ``uuid`` (``slot:{uuid}``, from a keyboard rendered before this
+          strategy shipped, or by an older client) names a representative row
+          that is read **only** for its time — deliberately without a lock,
+          since holding a row this booking is not going to claim would block a
+          booker the database could have served. Its channel and ``is_booked``
+          state are irrelevant; the row that gets booked is decided now, by
+          priority, against current state.
         """
-        tapped = await self._repo.get_by_id(slot_id)
-        if not tapped:
-            raise NotFoundError("Slot")
+        if isinstance(slot_ref, datetime):
+            slot_datetime = slot_ref
+        else:
+            tapped = await self._repo.get_by_id(slot_ref)
+            if not tapped:
+                raise NotFoundError("Slot")
+            slot_datetime = tapped.slot_datetime
 
-        slot = await self._repo.lock_next_slot_by_priority(tapped.slot_datetime)
+        slot = await self._repo.lock_next_slot_by_priority(slot_datetime)
         if not slot:
             # Every channel is taken at this time, or being taken right now.
             # Same signal the user already gets from the explicit path, so the

@@ -8,6 +8,11 @@ export interface SettingChoice {
   label: string;
 }
 
+export interface SettingAppliesWhen {
+  field: string;
+  value: string;
+}
+
 export interface SettingFieldMeta {
   key: string;
   label: string;
@@ -23,6 +28,11 @@ export interface SettingFieldMeta {
   // Populated only for `select` fields; the dropdown options come from the
   // backend registry so the UI can never offer a value PATCH would reject.
   choices: SettingChoice[] | null;
+  // Set when this field only takes effect while another setting holds a given
+  // value. Advisory — PATCH still accepts the field either way, so the UI marks
+  // it inert rather than locking it: an admin has to be able to set it before
+  // switching to the strategy that uses it.
+  applies_when: SettingAppliesWhen | null;
 }
 
 export interface SettingCategoryMeta {

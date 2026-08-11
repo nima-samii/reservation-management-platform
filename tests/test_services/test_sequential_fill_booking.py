@@ -166,12 +166,12 @@ async def _make_user(session) -> User:
     return user
 
 
-async def _book(session, redis, user, slot_id):
+async def _book(session, redis, user, slot_ref):
     with patch("app.services.reservation.enqueue_score_notification"), patch(
         "app.services.reservation.enqueue_reservation_creation_notification"
     ):
         return await ReservationService(session, redis).book_slot(
-            telegram_id=user.telegram_id, slot_id=slot_id
+            telegram_id=user.telegram_id, slot_ref=slot_ref
         )
 
 
@@ -299,6 +299,132 @@ async def test_the_time_survives_until_every_channel_is_taken(
     )["recommended"]
     assert len(still_offered) == 1
     assert still_offered[0].channel_id == ch_low.id
+
+
+# ── logical (lslot:HH:MM) references ──────────────────────────────────────────
+
+
+async def test_booking_by_time_alone_lands_on_the_top_channel(
+    sessions, redis, sequential_fill
+):
+    """No representative row anywhere in the path — the reference the keyboard
+    produced is a time, and a time is all the booking needs."""
+    setup = sessions()
+    (ch_high, _), slot_time = await _seed(setup, [0, 1])
+    user = await _make_user(setup)
+
+    booking = sessions()
+    res = await _book(booking, redis, user, slot_time)
+    await booking.commit()
+
+    assert res.channel_id == ch_high.id
+
+
+async def test_two_simultaneous_bookers_by_time_land_on_different_channels(
+    sessions, redis, sequential_fill
+):
+    """The same race as the uuid path, through the callback form users will
+    actually be served. Worth repeating rather than trusting by analogy: the
+    advisory-lock key is built from the reference itself, so a time and a uuid
+    are different keys and only one of them has been exercised so far."""
+    setup = sessions()
+    (ch_high, ch_low), slot_time = await _seed(setup, [0, 1])
+    alice, bob = await _make_user(setup), await _make_user(setup)
+
+    session_a, session_b = sessions(), sessions()
+    res_a, res_b = await asyncio.gather(
+        _book(session_a, redis, alice, slot_time),
+        _book(session_b, redis, bob, slot_time),
+        return_exceptions=True,
+    )
+    assert not isinstance(res_a, Exception), res_a
+    assert not isinstance(res_b, Exception), res_b
+    await session_a.commit()
+    await session_b.commit()
+
+    assert {res_a.channel_id, res_b.channel_id} == {ch_high.id, ch_low.id}
+
+
+async def test_one_user_double_tapping_a_time_gets_a_single_booking(
+    sessions, redis, sequential_fill
+):
+    setup = sessions()
+    await _seed(setup, [0, 1])
+    user = await _make_user(setup)
+    slot_time = _slot_time()
+
+    session_a, session_b = sessions(), sessions()
+    results = await asyncio.gather(
+        _book(session_a, redis, user, slot_time),
+        _book(session_b, redis, user, slot_time),
+        return_exceptions=True,
+    )
+
+    assert len([r for r in results if not isinstance(r, Exception)]) == 1
+    assert len([r for r in results if isinstance(r, SlotUnavailableError)]) == 1
+
+
+async def test_a_time_with_no_slots_is_unavailable_not_a_crash(
+    sessions, redis, sequential_fill
+):
+    """A keyboard that outlived its slots — regenerated schedule, deleted
+    channel. The reference names a time the database knows nothing about."""
+    setup = sessions()
+    _, slot_time = await _seed(setup, [0])
+    user = await _make_user(setup)
+
+    booking = sessions()
+    with pytest.raises(SlotUnavailableError):
+        await _book(booking, redis, user, slot_time + timedelta(minutes=7))
+
+
+async def test_a_logical_button_is_refused_after_the_strategy_is_switched_away(
+    sessions, redis, sequential_fill
+):
+    """The genuinely awkward case: the user was offered lslot: buttons, an admin
+    switched to THRESHOLD_UNLOCK, and only then did the user tap Confirm. Their
+    keyboard cannot be re-rendered, so the booking has to refuse it — and refuse
+    it as "unavailable", the one error the handler already recovers from by
+    offering another slot."""
+    setup = sessions()
+    await _seed(setup, [0, 1])
+    user = await _make_user(setup)
+    slot_time = _slot_time()
+
+    object.__setattr__(
+        settings, "RESERVATION_STRATEGY", RESERVATION_STRATEGY_THRESHOLD_UNLOCK
+    )
+
+    booking = sessions()
+    with pytest.raises(SlotUnavailableError):
+        await _book(booking, redis, user, slot_time)
+
+
+async def test_a_legacy_uuid_button_still_works_after_switching_to_sequential_fill(
+    sessions, redis, sequential_fill
+):
+    """The mirror image, and the reason slot:{uuid} was kept: a keyboard
+    rendered under THRESHOLD_UNLOCK names channel 1's row, and after the switch
+    that reference must still book — by its time, through the new path."""
+    setup = sessions()
+    (ch_high, ch_low), slot_time = await _seed(setup, [0, 1])
+    user = await _make_user(setup)
+
+    low_slot = (
+        await setup.execute(
+            ReservationSlot.__table__.select().where(
+                ReservationSlot.channel_id == ch_low.id
+            )
+        )
+    ).first()
+
+    booking = sessions()
+    res = await _book(booking, redis, user, low_slot.id)
+    await booking.commit()
+
+    # Resolved by *time*, so it lands on the priority winner rather than on the
+    # channel the stale button happened to name.
+    assert res.channel_id == ch_high.id
 
 
 # ── shared reservation rules are untouched by the strategy ────────────────────

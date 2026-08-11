@@ -31,7 +31,7 @@ from app.schedulers.jobs.reservation_notification import (
 )
 from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.score import ParticipationScoreService
-from app.services.strategies.base import SlotResolutionStrategy
+from app.services.strategies.base import SlotRef, SlotResolutionStrategy
 from app.services.strategies.explicit import ExplicitSlotStrategy
 from app.services.strategies.resolver import get_reservation_strategy
 
@@ -57,34 +57,35 @@ class ReservationService:
     @staticmethod
     def _contended_resource(
         user_id: uuid.UUID,
-        slot_id: uuid.UUID,
+        slot_ref: SlotRef,
         strategy: SlotResolutionStrategy | None,
     ) -> str:
         """What the advisory lock in ``_book`` should serialise on.
 
         Under identity resolution (no strategy, EXPLICIT, THRESHOLD_UNLOCK) the
-        booking claims exactly ``slot_id``, so that id is the contended
+        booking claims exactly the referenced row, so that id is the contended
         resource and the key is unchanged from before strategies existed.
 
-        A strategy that re-picks the row cannot use it. Every user tapping a
-        given time taps the same representative id while intending to land on
-        *different* rows, so locking that id would reject a booking the
-        database could have satisfied on the next channel down. The row-level
-        ``FOR UPDATE ... SKIP LOCKED`` is the real serialisation point there,
-        and it is per-row and therefore exactly right.
+        A strategy that re-picks the row cannot use it. Every user referencing
+        a given time — whether by ``lslot:HH:MM`` or by the same representative
+        uuid — intends to land on a *different* row, so locking that shared
+        reference would reject a booking the database could have satisfied on
+        the next channel down. The row-level ``FOR UPDATE ... SKIP LOCKED`` is
+        the real serialisation point there, and it is per-row and therefore
+        exactly right.
 
         Scoping the key to the user keeps the one guarantee the slot-id key
         still provided: a double-tapped confirm button is one booking, not two
         on two channels.
         """
         if strategy is None or strategy.resolves_by_identity:
-            return str(slot_id)
-        return f"{user_id}:{slot_id}"
+            return str(slot_ref)
+        return f"{user_id}:{slot_ref}"
 
     async def _book(
         self,
         user_id: uuid.UUID,
-        slot_id: uuid.UUID,
+        slot_ref: SlotRef,
         *,
         strategy: SlotResolutionStrategy | None = None,
     ) -> Reservation:
@@ -94,17 +95,17 @@ class ReservationService:
         which is the single implementation of all booking validation, slot
         claiming and reservation creation. Neither entry point may bypass this.
 
-        Omitting ``strategy`` books exactly ``slot_id``. That default is what
-        keeps the admin path honest: it never passes a strategy, so no
+        Omitting ``strategy`` books exactly the referenced row. That default is
+        what keeps the admin path honest: it never passes a strategy, so no
         configured strategy can reassign the channel an admin chose.
         """
-        lock_key = CacheKey.slot_lock(self._contended_resource(user_id, slot_id, strategy))
+        lock_key = CacheKey.slot_lock(self._contended_resource(user_id, slot_ref, strategy))
         lock_acquired = await self._redis.set_nx(lock_key, str(user_id), ttl=SLOT_LOCK_TTL)
         if not lock_acquired:
             raise SlotUnavailableError()
 
         try:
-            return await self._perform_booking(user_id, slot_id, strategy=strategy)
+            return await self._perform_booking(user_id, slot_ref, strategy=strategy)
         finally:
             await self._redis.delete(lock_key)
 
@@ -112,8 +113,15 @@ class ReservationService:
         self,
         *,
         telegram_id: int,
-        slot_id: uuid.UUID,
+        slot_ref: SlotRef,
     ) -> Reservation:
+        """Book on behalf of a Telegram user.
+
+        ``slot_ref`` is whatever the tapped button named — a physical slot id,
+        or a time when the configured strategy chooses the channel itself. The
+        two are not interchangeable, and it is the strategy that decides which
+        it can honour; see :data:`SlotRef`.
+        """
         user = await self._user_repo.get_by_telegram_id(telegram_id)
         if not user:
             raise NotFoundError("User")
@@ -123,7 +131,7 @@ class ReservationService:
             slot_repo=self._slot_repo,
             channel_repo=self._channel_repo,
         )
-        return await self._book(user.id, slot_id, strategy=strategy)
+        return await self._book(user.id, slot_ref, strategy=strategy)
 
     async def admin_create_reservation(
         self,
@@ -168,15 +176,15 @@ class ReservationService:
     async def _perform_booking(
         self,
         user_id: uuid.UUID,
-        slot_id: uuid.UUID,
+        slot_ref: SlotRef,
         *,
         strategy: SlotResolutionStrategy | None = None,
     ) -> Reservation:
         # Picking the physical slot is the only part of booking a strategy may
         # change; everything below is shared and must stay identical for all of
-        # them. Defaults to booking exactly `slot_id`.
+        # them. Defaults to booking exactly the referenced row.
         resolution = strategy or ExplicitSlotStrategy(self._slot_repo)
-        slot = await resolution.resolve_slot(slot_id)
+        slot = await resolution.resolve_slot(slot_ref)
 
         now = self._now_tz()
         if slot.slot_datetime <= now:

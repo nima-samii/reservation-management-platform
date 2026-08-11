@@ -6,14 +6,17 @@ data/admin_settings_override.json. `settings` is a process-wide mutable
 singleton that PATCH endpoints mutate in place, so an autouse fixture
 snapshots/restores every registry-tracked field around each test.
 """
+import dataclasses
 import json
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import app.api.admin.settings as settings_mod
+import app.core.settings_registry as settings_mod_registry
 from app.api.admin.deps import get_current_admin
 from app.api.main import create_app
 from app.core.config import (
@@ -288,6 +291,70 @@ async def test_metadata_choices_absent_for_non_select_fields(client):
     resp = await client.get("/api/admin/settings/metadata")
     fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
     assert fields_by_key["max_active_reservations"]["choices"] is None
+
+
+@pytest.mark.asyncio
+async def test_metadata_marks_the_threshold_as_strategy_dependent(client):
+    """The panel has no way to know CHANNEL_CAPACITY_THRESHOLD does nothing
+    under Sequential fill unless the registry says so. Without this it renders a
+    knob that silently has no effect."""
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+
+    assert fields_by_key["channel_capacity_threshold"]["applies_when"] == {
+        "field": "reservation_strategy",
+        "value": "THRESHOLD_UNLOCK",
+    }
+    assert fields_by_key["max_active_reservations"]["applies_when"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_dependent_setting_stays_editable_while_it_is_inert(client):
+    """Advisory, not enforcement. An admin has to be able to set the threshold
+    *before* switching back to the strategy that uses it, and a value saved
+    under the other strategy must survive rather than be rejected or reset."""
+    await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "SEQUENTIAL_FILL"}},
+    )
+
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"channel_capacity_threshold": 0.55}},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["reservation_rules"]["channel_capacity_threshold"] == 0.55
+
+
+def test_applies_when_references_are_checked_at_import():
+    """The guard has no runtime symptom — a dangling reference just means the
+    panel never greys the field out — so prove it actually fires."""
+    from app.core.settings_registry import (
+        BY_JSON_KEY,
+        SETTINGS_REGISTRY,
+        _check_applies_when,
+    )
+
+    for meta in SETTINGS_REGISTRY:
+        if meta.applies_when:
+            assert meta.applies_when[0] in BY_JSON_KEY
+
+    broken = dataclasses.replace(
+        BY_JSON_KEY["channel_capacity_threshold"],
+        applies_when=("no_such_setting", "X"),
+    )
+    with mock.patch.object(settings_mod_registry, "SETTINGS_REGISTRY", [broken]):
+        with pytest.raises(RuntimeError, match="unknown setting"):
+            _check_applies_when()
+
+    wrong_value = dataclasses.replace(
+        BY_JSON_KEY["channel_capacity_threshold"],
+        applies_when=("reservation_strategy", "NOT_A_STRATEGY"),
+    )
+    with mock.patch.object(settings_mod_registry, "SETTINGS_REGISTRY", [wrong_value]):
+        with pytest.raises(RuntimeError, match="not one of its choices"):
+            _check_applies_when()
 
 
 @pytest.mark.asyncio

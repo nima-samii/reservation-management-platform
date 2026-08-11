@@ -143,6 +143,23 @@ class SlotService:
         )
         return await strategy.list_bookable_slots(slot_date, now=now)
 
+    def offers_slots_by_time(self) -> bool:
+        """Whether a slot button should name a *time* rather than a slot row.
+
+        A button has to name whatever the configured strategy is going to
+        resolve, so this is the same question as ``resolves_by_identity`` — read
+        from the strategy rather than from ``RESERVATION_STRATEGY`` so the
+        keyboard and the booking path can never disagree about the callback
+        format. Built per call for the same reason as the listing above: the
+        admin panel can switch strategies at runtime.
+        """
+        strategy = get_reservation_strategy(
+            slot_repo=self._repo,
+            channel_repo=self._channel_repo,
+            config=settings,
+        )
+        return not strategy.resolves_by_identity
+
     async def get_available_dates(self) -> list[date]:
         now = self._now_tz()
         to_dt = now + timedelta(days=settings.MAX_RESERVATION_DAYS_AHEAD)

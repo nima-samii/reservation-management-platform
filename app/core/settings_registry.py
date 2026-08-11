@@ -16,6 +16,7 @@ from typing import Any, Callable
 from app.core.config import (
     DEFAULT_RESERVATION_STRATEGY,
     RESERVATION_STRATEGIES,
+    RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
     SELECTABLE_RESERVATION_STRATEGIES,
 )
 
@@ -66,6 +67,16 @@ class SettingMeta:
     # can never disagree about what is accepted. Tuple (not list) to keep the
     # frozen dataclass hashable.
     choices: tuple[tuple[str, str], ...] | None = None
+    # (json_key, value) of another setting this one only takes effect under.
+    # Surfaced in /metadata so the panel can grey the field out and say why,
+    # instead of showing a knob that silently does nothing.
+    #
+    # Deliberately advisory, not enforcement: PATCH still accepts the field
+    # while the condition is false. An admin has to be able to set the
+    # threshold *before* switching back to the strategy that uses it, and a
+    # value saved under the other strategy must survive the round trip rather
+    # than being rejected or reset.
+    applies_when: tuple[str, str] | None = None
 
 
 # Human-readable label per reservation strategy. Indexed by RESERVATION_STRATEGIES
@@ -129,6 +140,7 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         ),
         value_type=float, example=0.70, validator="float_range", min=0.1, max=1.0,
         placeholder="0.70",
+        applies_when=("reservation_strategy", RESERVATION_STRATEGY_THRESHOLD_UNLOCK),
     ),
     SettingMeta(
         key="SAME_DAY_CUTOFF_HOUR", json_key="same_day_cutoff_hour",
@@ -317,6 +329,32 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
 
 BY_JSON_KEY: dict[str, SettingMeta] = {m.json_key: m for m in SETTINGS_REGISTRY}
 BY_SETTINGS_KEY: dict[str, SettingMeta] = {m.key: m for m in SETTINGS_REGISTRY}
+
+
+def _check_applies_when() -> None:
+    """Fail at import if an ``applies_when`` names something that cannot exist.
+
+    A dangling reference has no visible symptom — the panel would simply never
+    grey the field out — so it would ship and stay shipped. Renaming a setting
+    or a strategy value breaks loudly here instead.
+    """
+    for meta in SETTINGS_REGISTRY:
+        if meta.applies_when is None:
+            continue
+        json_key, expected = meta.applies_when
+        target = BY_JSON_KEY.get(json_key)
+        if target is None:
+            raise RuntimeError(
+                f"{meta.json_key}.applies_when references unknown setting {json_key!r}"
+            )
+        if target.choices and expected not in {v for v, _ in target.choices}:
+            raise RuntimeError(
+                f"{meta.json_key}.applies_when expects {json_key}={expected!r}, "
+                f"which is not one of its choices"
+            )
+
+
+_check_applies_when()
 
 _HH_MM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _TELEGRAM_CHANNEL_URL_RE = re.compile(r"^https://t\.me/.+")

@@ -1,7 +1,6 @@
 """THRESHOLD_UNLOCK — channels open one after another as each one fills up."""
 from __future__ import annotations
 
-import uuid
 from datetime import date, datetime
 from typing import Any
 
@@ -9,7 +8,7 @@ from app.core.config import RESERVATION_STRATEGY_THRESHOLD_UNLOCK, settings
 from app.db.models.slot import ReservationSlot
 from app.repositories.channel import ChannelRepository
 from app.repositories.slot import SlotRepository
-from app.services.strategies.base import GroupedSlots
+from app.services.strategies.base import GroupedSlots, SlotRef
 from app.services.strategies.explicit import ExplicitSlotStrategy
 
 
@@ -92,8 +91,10 @@ class ThresholdUnlockStrategy:
 
         return GroupedSlots(recommended=recommended, more_available=more_available)
 
-    async def resolve_slot(self, slot_id: uuid.UUID) -> ReservationSlot:
+    async def resolve_slot(self, slot_ref: SlotRef) -> ReservationSlot:
         # One button per physical slot ⇒ the id the user tapped is the slot to
         # book. Delegated rather than reimplemented so both this strategy and
-        # the admin path share a single by-id resolution implementation.
-        return await self._resolution.resolve_slot(slot_id)
+        # the admin path share a single by-id resolution implementation — which
+        # is also what makes a logical reference fail here the same way it does
+        # for the admin path, instead of two hand-written rejections.
+        return await self._resolution.resolve_slot(slot_ref)

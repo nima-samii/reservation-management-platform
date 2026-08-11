@@ -8,6 +8,7 @@ from sqlalchemy.exc import OperationalError
 from app.core.exceptions import NotFoundError, SlotUnavailableError
 from app.db.models.slot import ReservationSlot
 from app.repositories.slot import SlotRepository
+from app.services.strategies.base import SlotRef
 
 
 class ExplicitSlotStrategy:
@@ -30,9 +31,18 @@ class ExplicitSlotStrategy:
     def __init__(self, slot_repo: SlotRepository) -> None:
         self._slot_repo = slot_repo
 
-    async def resolve_slot(self, slot_id: uuid.UUID) -> ReservationSlot:
+    async def resolve_slot(self, slot_ref: SlotRef) -> ReservationSlot:
+        if not isinstance(slot_ref, uuid.UUID):
+            # A logical "any channel at this time" reference, which identity
+            # resolution has no way to honour. This is reachable in production:
+            # a user is offered lslot: buttons under SEQUENTIAL_FILL, an admin
+            # switches the strategy, and the user then taps Confirm. Their
+            # keyboard is stale, which is exactly what SlotUnavailableError
+            # means to the handler — it already offers "pick another slot".
+            raise SlotUnavailableError()
+
         try:
-            slot = await self._slot_repo.get_slot_with_lock(slot_id)
+            slot = await self._slot_repo.get_slot_with_lock(slot_ref)
         except OperationalError:
             # FOR UPDATE NOWAIT lost the race to a concurrent booking.
             raise SlotUnavailableError()

@@ -216,7 +216,7 @@ id (PK)            id (PK)                      id (PK)
 code (UQ)          telegram_id (UQ)             name
 name (UQ)          public_user_code (UQ)        telegram_channel_id
 flag_emoji         full_name                    invite_link
-is_active          username                     capacity
+is_active          username                     capacity ⁵
                    gender                       priority
                    country_id (FK)              is_active
                    participation_score  ←score
@@ -274,6 +274,8 @@ created_at
 >
 > ⁴ `broadcast_logs.status`: `sent` · `failed`
 >
+> ⁵ `channels.capacity` is **deprecated and unread**. A channel's real daily capacity is the number of slots generated for it on that date — which is what the unlock gate and the dashboard fill rate count. The column is left in place rather than dropped in a destructive migration, and is no longer exposed by any API.
+>
 > Partial unique index on `reservations(slot_id) WHERE status = 'active'` — allows re-booking after cancellation.
 
 ---
@@ -289,7 +291,8 @@ created_at
 | Slot duration | 30 minutes (interval slots); 11:59 PM is a special terminal slot |
 | Same-day booking cutoff | 12:00 PM — today's slots hidden after cutoff |
 | Same-day cancellation cutoff | 12:00 PM — cancel button hidden after cutoff |
-| Channel unlock threshold | 70% daily fill ratio of preceding channel |
+| Channel allocation | `THRESHOLD_UNLOCK` (default) or `SEQUENTIAL_FILL` — see [Channel Management](#channel-management) |
+| Channel unlock threshold | 70% daily fill ratio of preceding channel (`THRESHOLD_UNLOCK` only) |
 | Lifecycle job interval | Every 30 minutes (`active` → `completed`) |
 
 ---
@@ -298,11 +301,33 @@ created_at
 
 Users book **slots**, not channels — channel assignment is transparent to the user.
 
-Each active channel gets its own set of slots per day. Channels are exposed to users in priority order using a **fill-ratio gate**:
+Each active channel gets its own set of slots per day. *How* those slots are offered, and which channel a booking lands on, is chosen by the **reservation strategy** (`RESERVATION_STRATEGY`, switchable live from the admin panel). It only affects new bookings; existing reservations keep the channel they were made on.
+
+### `THRESHOLD_UNLOCK` (default)
+
+Channels are exposed in priority order using a **fill-ratio gate**:
 
 1. **Channel 1** slots are always shown first ("Recommended Slots").
 2. Once Channel 1's daily fill ratio reaches `CHANNEL_CAPACITY_THRESHOLD` (default 70%), Channel 2 slots become visible ("More Available Slots").
 3. The same rule cascades for Channel 3, 4, etc.
+
+The same clock time can appear once per open channel, and each button names one physical slot — so the user picks the channel implicitly, and the booking claims exactly the row they tapped.
+
+### `SEQUENTIAL_FILL`
+
+Every active channel participates from the start, and the user never sees channels at all:
+
+1. Each clock time is listed **once**, however many channels still have it free.
+2. On confirm, the booking claims the **highest-priority channel still free at that time** — decided then, under a row lock, not when the keyboard was drawn.
+3. When every channel at that time is taken, the time disappears from the list.
+
+Channels therefore fill strictly in priority order, and `CHANNEL_CAPACITY_THRESHOLD` is **ignored** (the admin panel greys it out and says so).
+
+The channel is picked by a single statement — `SELECT … FOR UPDATE OF reservation_slots SKIP LOCKED ORDER BY channels.priority LIMIT 1` — so two people confirming the same time at the same moment cascade onto different channels instead of one being turned away. Concurrency is covered against a real PostgreSQL server in `tests/test_repositories/test_slot_priority_lock.py`.
+
+**Callback formats.** Slot buttons carry `slot:{uuid}` under `THRESHOLD_UNLOCK` and `lslot:HH:MM` under `SEQUENTIAL_FILL`. Both are always accepted: a keyboard already sitting in a user's chat cannot be re-rendered, so a strategy switch leaves both forms live in the wild. A stale `slot:{uuid}` under `SEQUENTIAL_FILL` is resolved by its *time*; a stale `lslot:HH:MM` under `THRESHOLD_UNLOCK` cannot be honoured and is reported as "slot no longer available", which the bot already recovers from by offering another slot.
+
+**Indexes.** No SEQUENTIAL_FILL-specific index is needed. Both new queries are served by the existing `slot_datetime` and `(slot_datetime, channel_id)` btrees; a candidate partial index on `(slot_datetime, channel_id) WHERE NOT is_booked` was measured at ~300k slots (8 channels × 6 years) and the planner did not choose it for either query.
 
 **Daily broadcast**: at `DAILY_BROADCAST_HOUR` each channel receives its own schedule message — containing only that channel's reservations. The bot must be an admin in each channel with **Post messages** and **Pin messages** permissions.
 
@@ -360,7 +385,8 @@ The layout is rendered by `app/templates/schedule_message.j2`. Special event blo
 |---|---|---|
 | `MAX_ACTIVE_RESERVATIONS` | `10` | Max future active reservations per user |
 | `MAX_RESERVATION_DAYS_AHEAD` | `14` | Booking window in days |
-| `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Daily fill ratio to unlock the next channel |
+| `RESERVATION_STRATEGY` | `THRESHOLD_UNLOCK` | How slots are offered and which channel a booking lands on — `THRESHOLD_UNLOCK` or `SEQUENTIAL_FILL` |
+| `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Daily fill ratio to unlock the next channel. Ignored under `SEQUENTIAL_FILL` |
 | `SAME_DAY_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day booking is blocked |
 | `SAME_DAY_CANCEL_CUTOFF_HOUR` | `12` | Hour (0–23) after which same-day cancellation is blocked |
 | `SLOT_START_HOUR` | `16` | First slot hour of the day |

@@ -11,6 +11,7 @@ import {
   getMembershipChannels,
   putMembershipChannels,
   type SettingsValues,
+  type SettingsMetadata,
   type SettingFieldMeta,
   type SettingCategoryMeta,
   type MembershipChannel,
@@ -285,6 +286,48 @@ function SettingField({
     return <NumberInput meta={meta} value={Number(value ?? 0)} error={error} onChange={onChange} />;
   }
   return <TextInput meta={meta} value={String(value ?? "")} error={error} onChange={onChange} />;
+}
+
+// ── Applicability ────────────────────────────────────────────────────────────
+
+// A setting's `applies_when` names another setting by json_key. That other
+// setting need not live in the same category, so look across all of them —
+// and read from `values`, not from the server, so toggling the strategy greys
+// its dependants out immediately rather than after a save.
+function findValue(values: SettingsValues, fieldKey: string): string | null {
+  for (const section of Object.values(values)) {
+    if (fieldKey in section) {
+      const raw = section[fieldKey];
+      return raw === null ? null : String(raw);
+    }
+  }
+  return null;
+}
+
+function labelForValue(
+  metadata: SettingsMetadata,
+  fieldKey: string,
+  value: string
+): string {
+  for (const category of metadata) {
+    for (const field of category.fields) {
+      if (field.key !== fieldKey) continue;
+      const choice = (field.choices ?? []).find((c) => c.value === value);
+      return choice ? choice.label.split("—")[0].trim() : value;
+    }
+  }
+  return value;
+}
+
+// The field stays editable on purpose: an admin must be able to set the
+// threshold *before* switching to the strategy that uses it. This only says it
+// is currently doing nothing.
+function InertNotice({ requirement }: { requirement: string }) {
+  return (
+    <p className="mt-1 text-[11px] text-amber-500/80">
+      Not in use — applies only under {requirement}.
+    </p>
+  );
 }
 
 // ── Section wrapper ──────────────────────────────────────────────────────────
@@ -614,16 +657,35 @@ export default function SettingsPage() {
           saving={mutation.isPending}
           onSave={() => handleSaveCategory(category)}
         >
-          {category.fields.map((meta) => (
-            <div key={meta.key} className={meta.type === "bool" ? "sm:col-span-2" : undefined}>
-              <SettingField
-                meta={meta}
-                value={values[category.key]?.[meta.key] ?? null}
-                error={fieldErrors[`${category.key}.${meta.key}`]}
-                onChange={(v) => handleFieldChange(category.key, meta, v)}
-              />
-            </div>
-          ))}
+          {category.fields.map((meta) => {
+            const inert =
+              meta.applies_when !== null &&
+              findValue(values, meta.applies_when.field) !== meta.applies_when.value;
+            return (
+              <div
+                key={meta.key}
+                className={meta.type === "bool" ? "sm:col-span-2" : undefined}
+              >
+                <div className={inert ? "opacity-50" : undefined}>
+                  <SettingField
+                    meta={meta}
+                    value={values[category.key]?.[meta.key] ?? null}
+                    error={fieldErrors[`${category.key}.${meta.key}`]}
+                    onChange={(v) => handleFieldChange(category.key, meta, v)}
+                  />
+                </div>
+                {inert && meta.applies_when && (
+                  <InertNotice
+                    requirement={labelForValue(
+                      metadata,
+                      meta.applies_when.field,
+                      meta.applies_when.value
+                    )}
+                  />
+                )}
+              </div>
+            );
+          })}
         </Section>
       ))}
 

@@ -10,7 +10,7 @@ unchanged by test_slot_generation.TestChannelUnlockThreshold):
     configured strategy
 """
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +20,7 @@ from sqlalchemy.exc import OperationalError
 from app.core.config import (
     RESERVATION_STRATEGY_SEQUENTIAL_FILL,
     RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
+    SELECTABLE_RESERVATION_STRATEGIES,
 )
 from app.core.exceptions import (
     NotFoundError,
@@ -107,6 +108,34 @@ class TestExplicitResolution:
             await ExplicitSlotStrategy(repo).resolve_slot(uuid.uuid4())
 
     @pytest.mark.asyncio
+    async def test_a_logical_reference_is_refused_not_guessed_at(self):
+        """Reachable in production, not a type error: a user is offered lslot:
+        buttons under SEQUENTIAL_FILL, an admin switches the strategy, then the
+        user taps Confirm. Identity resolution cannot honour "any channel at
+        18:00" and must say so rather than book some row that happens to be
+        near it. SlotUnavailableError because their keyboard is stale, which is
+        the one the handler already turns into "pick another slot"."""
+        repo = AsyncMock()
+
+        with pytest.raises(SlotUnavailableError):
+            await ExplicitSlotStrategy(repo).resolve_slot(
+                datetime(2030, 6, 1, 18, 0, tzinfo=timezone.utc)
+            )
+
+        repo.get_slot_with_lock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_threshold_unlock_also_refuses_a_logical_reference(self):
+        """Delegation, not a second hand-written rejection — so the two can
+        never drift apart."""
+        strategy = ThresholdUnlockStrategy(
+            slot_repo=AsyncMock(), channel_repo=MagicMock()
+        )
+
+        with pytest.raises(SlotUnavailableError):
+            await strategy.resolve_slot(datetime(2030, 6, 1, 18, 0, tzinfo=timezone.utc))
+
+    @pytest.mark.asyncio
     async def test_threshold_unlock_resolves_by_identity(self):
         """THRESHOLD_UNLOCK renders one button per physical slot, so booking
         must claim that exact slot — no channel substitution."""
@@ -160,6 +189,34 @@ class TestSequentialFill:
         await self._strategy(repo).resolve_slot(tapped.id)
 
         repo.get_slot_with_lock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_logical_reference_needs_no_lookup_at_all(self):
+        """``lslot:HH:MM`` already carries everything the pick needs. Reading a
+        representative row for it would be a query whose answer is allowed to
+        be stale by the time it is used."""
+        when = datetime(2030, 6, 1, 18, 0, tzinfo=timezone.utc)
+        winner = _slot()
+        repo = AsyncMock()
+        repo.lock_next_slot_by_priority = AsyncMock(return_value=winner)
+
+        assert await self._strategy(repo).resolve_slot(when) is winner
+
+        repo.get_by_id.assert_not_called()
+        repo.lock_next_slot_by_priority.assert_awaited_once_with(when)
+
+    @pytest.mark.asyncio
+    async def test_a_logical_reference_to_a_vanished_time_is_unavailable(self):
+        """Slots regenerated, or every channel taken — either way there is no
+        row to claim, and no NotFoundError to leak past the handler's
+        except-list."""
+        repo = AsyncMock()
+        repo.lock_next_slot_by_priority = AsyncMock(return_value=None)
+
+        with pytest.raises(SlotUnavailableError):
+            await self._strategy(repo).resolve_slot(
+                datetime(2030, 6, 1, 18, 0, tzinfo=timezone.utc)
+            )
 
     @pytest.mark.asyncio
     async def test_no_free_channel_becomes_slot_unavailable(self):
@@ -261,6 +318,59 @@ class TestContentionKey:
         sequential = SequentialFillStrategy(slot_repo=AsyncMock())
 
         assert self._key(sequential) == self._key(sequential)
+
+    def test_a_logical_reference_is_keyed_the_same_way(self):
+        """The policy is about *what the reference means*, not what type it is:
+        a time is just as shared between users as a representative id, so it
+        gets the same per-user scoping — and double-tap protection with it."""
+        sequential = SequentialFillStrategy(slot_repo=AsyncMock())
+        when = datetime(2030, 6, 1, 18, 0, tzinfo=timezone.utc)
+
+        from app.services.reservation import ReservationService
+
+        def key(user):
+            return ReservationService._contended_resource(user, when, sequential)
+
+        assert key(self.USER) == key(self.USER)
+        assert key(self.USER) != key(uuid.uuid4())
+        assert key(self.USER) != str(when)
+
+
+# ── the keyboard asks the strategy, not the setting ───────────────────────────
+
+class TestCallbackFormatFollowsTheStrategy:
+    """A slot button has to name whatever the booking path is going to resolve.
+    The two are kept in step by reading one flag off the built strategy, so a
+    future strategy cannot be shipped with a keyboard the booking refuses."""
+
+    def test_threshold_unlock_keeps_naming_rows(self, monkeypatch):
+        from app.core.config import settings as live
+        from app.services.slot import SlotService
+
+        monkeypatch.setattr(
+            live, "RESERVATION_STRATEGY", RESERVATION_STRATEGY_THRESHOLD_UNLOCK
+        )
+        assert SlotService(MagicMock()).offers_slots_by_time() is False
+
+    def test_sequential_fill_names_times(self, monkeypatch):
+        from app.core.config import settings as live
+        from app.services.slot import SlotService
+
+        monkeypatch.setattr(
+            live, "RESERVATION_STRATEGY", RESERVATION_STRATEGY_SEQUENTIAL_FILL
+        )
+        assert SlotService(MagicMock()).offers_slots_by_time() is True
+
+    @pytest.mark.parametrize("name", list(SELECTABLE_RESERVATION_STRATEGIES))
+    def test_every_selectable_strategy_answers_the_question(self, name, monkeypatch):
+        """`resolves_by_identity` is a Protocol member, so a strategy that forgot
+        it would only fail at the moment a keyboard is rendered — i.e. in
+        production, for a real user. Fail here instead."""
+        from app.core.config import settings as live
+        from app.services.slot import SlotService
+
+        monkeypatch.setattr(live, "RESERVATION_STRATEGY", name)
+        assert isinstance(SlotService(MagicMock()).offers_slots_by_time(), bool)
 
 
 # ── admin path is never re-routed by a strategy ───────────────────────────────

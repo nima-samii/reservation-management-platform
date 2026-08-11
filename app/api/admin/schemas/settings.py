@@ -12,6 +12,17 @@ class SettingChoiceOut(BaseModel):
     label: str
 
 
+class SettingAppliesWhenOut(BaseModel):
+    """This setting only takes effect while `field` equals `value`.
+
+    Advisory: PATCH still accepts the setting when the condition is false, so
+    the panel should mark it inert rather than block editing it.
+    """
+
+    field: str
+    value: str
+
+
 class SettingFieldMetaOut(BaseModel):
     key: str
     label: str
@@ -25,6 +36,7 @@ class SettingFieldMetaOut(BaseModel):
     runtime_safe: bool
     widget: Optional[str] = None
     choices: Optional[list[SettingChoiceOut]] = None
+    applies_when: Optional[SettingAppliesWhenOut] = None
 
 
 class SettingCategoryMetaOut(BaseModel):
