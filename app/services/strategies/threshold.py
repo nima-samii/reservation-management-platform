@@ -30,6 +30,8 @@ class ThresholdUnlockStrategy:
     """
 
     name = RESERVATION_STRATEGY_THRESHOLD_UNLOCK
+    # One button per physical slot, so the tapped id *is* the row to book.
+    resolves_by_identity = True
 
     def __init__(
         self,

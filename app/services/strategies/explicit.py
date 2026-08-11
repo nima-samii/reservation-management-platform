@@ -25,6 +25,7 @@ class ExplicitSlotStrategy:
     """
 
     name = "EXPLICIT"
+    resolves_by_identity = True
 
     def __init__(self, slot_repo: SlotRepository) -> None:
         self._slot_repo = slot_repo

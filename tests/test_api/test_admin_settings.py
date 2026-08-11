@@ -228,7 +228,24 @@ async def test_patch_non_scheduler_setting_does_not_reschedule(client, monkeypat
     fake_scheduler.reschedule_job.assert_not_called()
 
 
-# ── Reservation strategy (Phase 1: configuration only) ────────────────────
+# ── Reservation strategy ──────────────────────────────────────────────────
+
+
+def _unimplemented_strategies() -> list[str]:
+    """Known strategy names that are not yet selectable, or skip the test.
+
+    Every strategy currently ships implemented, so the guards below have
+    nothing to bite on. They are kept rather than deleted because the
+    invariant is permanent — the moment a new name is added to
+    RESERVATION_STRATEGIES ahead of its booking path, these reactivate on
+    their own and hold it to being hidden and rejected everywhere.
+    """
+    unimplemented = sorted(
+        set(RESERVATION_STRATEGIES) - set(SELECTABLE_RESERVATION_STRATEGIES)
+    )
+    if not unimplemented:
+        pytest.skip("every known strategy is selectable — nothing to guard yet")
+    return unimplemented
 
 
 def test_reservation_strategy_defaults_to_threshold_unlock():
@@ -257,8 +274,7 @@ async def test_metadata_exposes_strategy_as_select_with_choices(client):
 async def test_metadata_hides_unimplemented_strategies(client):
     """A strategy with no booking path must not be offered — an admin picking
     it would break the reservation flow rather than change it."""
-    unimplemented = set(RESERVATION_STRATEGIES) - set(SELECTABLE_RESERVATION_STRATEGIES)
-    assert unimplemented, "no unimplemented strategy left to guard — drop this test"
+    unimplemented = _unimplemented_strategies()
 
     resp = await client.get("/api/admin/settings/metadata")
     fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
@@ -298,10 +314,7 @@ async def test_patch_strategy_roundtrips(client):
 async def test_patch_unimplemented_strategy_is_rejected(client):
     """Hiding it from the dropdown is not enough — a direct API call must be
     refused too, or the bot ends up configured into a path that does not exist."""
-    unimplemented = sorted(
-        set(RESERVATION_STRATEGIES) - set(SELECTABLE_RESERVATION_STRATEGIES)
-    )
-    assert unimplemented, "no unimplemented strategy left to guard — drop this test"
+    unimplemented = _unimplemented_strategies()
 
     resp = await client.patch(
         "/api/admin/settings",
@@ -309,6 +322,45 @@ async def test_patch_unimplemented_strategy_is_rejected(client):
     )
     assert resp.status_code == 422
     assert settings.RESERVATION_STRATEGY == "THRESHOLD_UNLOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_strategy_to_sequential_fill_roundtrips(client):
+    """SEQUENTIAL_FILL is now a real, selectable strategy — the switch an admin
+    flips to change how channels are allocated."""
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"reservation_strategy": "SEQUENTIAL_FILL"}},
+    )
+    assert resp.status_code == 200
+    assert settings.RESERVATION_STRATEGY == "SEQUENTIAL_FILL"
+
+    resp2 = await client.get("/api/admin/settings")
+    assert resp2.json()["reservation_rules"]["reservation_strategy"] == "SEQUENTIAL_FILL"
+
+
+@pytest.mark.asyncio
+async def test_every_selectable_strategy_is_buildable(client):
+    """The dropdown and the resolver must not drift apart.
+
+    Offering a name the resolver cannot build is the exact failure the
+    SELECTABLE_ gate exists to prevent, so assert it directly rather than
+    trusting that both lists were updated together.
+    """
+    from unittest.mock import MagicMock
+
+    from app.services.strategies.resolver import get_reservation_strategy
+
+    resp = await client.get("/api/admin/settings/metadata")
+    fields_by_key = {f["key"]: f for c in resp.json() for f in c["fields"]}
+    offered = [c["value"] for c in fields_by_key["reservation_strategy"]["choices"]]
+
+    assert offered  # a dropdown with no options would pass everything below
+    for value in offered:
+        strategy = get_reservation_strategy(
+            slot_repo=MagicMock(), channel_repo=MagicMock(), name=value
+        )
+        assert strategy.name == value
 
 
 @pytest.mark.asyncio
@@ -360,10 +412,7 @@ def test_load_settings_override_applies_valid_strategy(tmp_path, monkeypatch):
 def test_load_settings_override_rejects_unimplemented_strategy(tmp_path, monkeypatch):
     """The override file is the one path that bypasses both the dropdown and
     PATCH validation, so it needs the same guard."""
-    unimplemented = sorted(
-        set(RESERVATION_STRATEGIES) - set(SELECTABLE_RESERVATION_STRATEGIES)
-    )
-    assert unimplemented, "no unimplemented strategy left to guard — drop this test"
+    unimplemented = _unimplemented_strategies()
 
     override_path = tmp_path / "admin_settings_override.json"
     override_path.write_text(

@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.config import (
     RESERVATION_STRATEGIES,
+    RESERVATION_STRATEGY_SEQUENTIAL_FILL,
     RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
 )
 from app.core.config import settings as global_settings
@@ -16,6 +17,7 @@ from app.core.exceptions import UnsupportedReservationStrategyError
 from app.repositories.channel import ChannelRepository
 from app.repositories.slot import SlotRepository
 from app.services.strategies.base import ReservationStrategy
+from app.services.strategies.sequential import SequentialFillStrategy
 from app.services.strategies.threshold import ThresholdUnlockStrategy
 
 
@@ -46,6 +48,14 @@ def get_reservation_strategy(
         return ThresholdUnlockStrategy(
             slot_repo=slot_repo,
             channel_repo=channel_repo,
+            config=config if config is not None else global_settings,
+        )
+
+    if strategy_name == RESERVATION_STRATEGY_SEQUENTIAL_FILL:
+        # No channel_repo: this strategy applies channel priority in SQL and
+        # keeps no per-channel state of its own.
+        return SequentialFillStrategy(
+            slot_repo=slot_repo,
             config=config if config is not None else global_settings,
         )
 

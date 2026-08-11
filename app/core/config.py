@@ -55,10 +55,10 @@ RESERVATION_STRATEGIES: tuple[str, ...] = (
 # The subset that is actually implemented and therefore safe to configure.
 # This is the ONE place that gates availability: it drives the admin dropdown,
 # PATCH validation, env parsing and the override loader alike, so a strategy
-# cannot be selected anywhere until its booking path exists. Adding
-# SEQUENTIAL_FILL here is the switch that turns it on once implemented.
+# cannot be selected anywhere until its booking path exists.
 SELECTABLE_RESERVATION_STRATEGIES: tuple[str, ...] = (
     RESERVATION_STRATEGY_THRESHOLD_UNLOCK,
+    RESERVATION_STRATEGY_SEQUENTIAL_FILL,
 )
 
 DEFAULT_RESERVATION_STRATEGY = RESERVATION_STRATEGY_THRESHOLD_UNLOCK

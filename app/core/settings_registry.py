@@ -110,8 +110,11 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
             "How slots are offered and which channel a booking lands on. "
             "Threshold unlock: users pick a slot from a specific channel, and each "
             "next channel opens once the previous one reaches the capacity threshold "
-            "below. Only affects new bookings; existing reservations keep the channel "
-            "they were made on. Further strategies appear here as they ship."
+            "below. Sequential fill: users see each time once and never choose a "
+            "channel — the booking goes to the highest-priority channel still free at "
+            "that time, so channels fill in order and the threshold below is ignored. "
+            "Only affects new bookings; existing reservations keep the channel they "
+            "were made on."
         ),
         value_type=str, example=DEFAULT_RESERVATION_STRATEGY, validator="enum_choice",
         widget="select", choices=_STRATEGY_CHOICES,

@@ -52,6 +52,17 @@ class SlotResolutionStrategy(Protocol):
     ``NotFoundError`` when no such slot exists.
     """
 
+    #: True when ``resolve_slot`` claims exactly the row named by ``slot_id``.
+    #:
+    #: This is not cosmetic — it decides what the booking contends for, and so
+    #: what the advisory lock in ``ReservationService._book`` may be keyed on.
+    #: Under identity resolution two users tapping the same button want the
+    #: same row, so the slot id is the contended resource. Under a strategy
+    #: that re-picks the row (SEQUENTIAL_FILL), everyone tapping a given time
+    #: taps the *same representative id* while intending different rows, so
+    #: locking that id would reject bookings the database could satisfy.
+    resolves_by_identity: bool
+
     async def resolve_slot(self, slot_id: uuid.UUID) -> ReservationSlot: ...
 
 
