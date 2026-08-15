@@ -44,7 +44,7 @@ async def test_successful_booking_sets_last_reservation_at(service):
     reservation = SimpleNamespace(id=uuid.uuid4())
 
     service._slot_repo.get_slot_with_lock = AsyncMock(return_value=slot)
-    service._res_repo.has_reservation_on_date = AsyncMock(return_value=False)
+    service._res_repo.count_reservations_on_date = AsyncMock(return_value=0)
     service._res_repo.count_active_reservations = AsyncMock(return_value=0)
     service._res_repo.create = AsyncMock(return_value=reservation)
     service._res_repo.get_reservation_with_details = AsyncMock(return_value=reservation)
@@ -67,7 +67,7 @@ async def test_failed_booking_never_sets_last_reservation_at(service):
     user_id = uuid.uuid4()
     slot = _slot(is_booked=True)
     service._slot_repo.get_slot_with_lock = AsyncMock(return_value=slot)
-    service._res_repo.has_reservation_on_date = AsyncMock(return_value=False)
+    service._res_repo.count_reservations_on_date = AsyncMock(return_value=0)
     service._res_repo.count_active_reservations = AsyncMock(return_value=0)
 
     with pytest.raises(SlotUnavailableError):

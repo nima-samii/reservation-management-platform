@@ -1,9 +1,10 @@
 import json
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
+import pytz
 import sqlalchemy as sa
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +13,8 @@ from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 from app.repositories.base import BaseRepository
+
+TZ = pytz.timezone(settings.TIMEZONE)
 
 
 def _parse_notes(notes: str | None) -> dict:
@@ -132,26 +135,46 @@ class ReservationRepository(BaseRepository[Reservation]):
         result = await self.session.execute(stmt)
         return (result.rowcount or 0) > 0
 
-    async def has_reservation_on_date(
-        self, user_id: uuid.UUID, target_date: datetime
-    ) -> bool:
-        day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+    async def count_reservations_on_date(
+        self, user_id: uuid.UUID, local_date: date
+    ) -> int:
+        """Count a user's reservations falling on a *local* calendar day.
+
+        Takes the local date, not a datetime. The predecessor derived the day
+        window from a slot's ``slot_datetime``, which asyncpg hands back as
+        UTC — so "day" silently meant the UTC calendar day. With slots at
+        16:00-23:59 Asia/Baghdad (13:00-20:59 UTC) the two coincide and the bug
+        never showed, but SLOT_START_HOUR is admin-editable down to 0, and a
+        local 00:00-02:59 slot lands on the *previous* UTC day.
+
+        Bounds are two independently localized midnights rather than
+        ``start + 24h``: a local day is not 24 hours long across a DST
+        transition. Asia/Baghdad has no DST today; this must not depend on that.
+
+        The window compares the indexed column directly instead of using the
+        ``cast(timezone(TZ, slot_datetime), Date) == :d`` form the admin-list
+        queries below use. Both are correct, but a cast over the column is not
+        sargable — this form can use the btree index on ``slot_datetime``.
+
+        Half-open ``[start, end)``: the old ``<= 23:59:59.999999`` sentinel
+        could miss a slot in the final fraction of a second.
+        """
+        day_start = TZ.localize(datetime.combine(local_date, time.min))
+        day_end = TZ.localize(
+            datetime.combine(local_date + timedelta(days=1), time.min)
+        )
         stmt = (
-            select(Reservation.id)
+            select(func.count(Reservation.id))
             .join(Reservation.slot)
             .where(
-                and_(
-                    Reservation.user_id == user_id,
-                    Reservation.status == ReservationStatus.ACTIVE,
-                    ReservationSlot.slot_datetime >= day_start,
-                    ReservationSlot.slot_datetime <= day_end,
-                )
+                Reservation.user_id == user_id,
+                Reservation.status == ReservationStatus.ACTIVE,
+                ReservationSlot.slot_datetime >= day_start,
+                ReservationSlot.slot_datetime < day_end,
             )
-            .limit(1)
         )
         result = await self.session.execute(stmt)
-        return result.scalar() is not None
+        return result.scalar() or 0
 
     async def get_reservation_with_details(
         self, reservation_id: uuid.UUID

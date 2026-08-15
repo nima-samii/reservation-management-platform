@@ -197,10 +197,13 @@ class ReservationService:
         if slot.is_booked:
             raise SlotUnavailableError()
 
-        day_conflict = await self._res_repo.has_reservation_on_date(
-            user_id, slot.slot_datetime
+        # Counted against the *local* calendar day, reusing the same
+        # slot_local_date the cutoff rule above was evaluated on — the two must
+        # never disagree about which day a slot belongs to.
+        daily_count = await self._res_repo.count_reservations_on_date(
+            user_id, slot_local_date
         )
-        if day_conflict:
+        if daily_count >= 1:
             raise DailyLimitError()
 
         active_count = await self._res_repo.count_active_reservations(user_id, now)
