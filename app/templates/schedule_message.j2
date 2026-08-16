@@ -7,7 +7,7 @@
 {% for entry in entries %}
 
 {{ entry.clock }} <b>{{ entry.time }}</b>
-{{ entry.gender_emoji }} {{ entry.country_display }}  │  ID: <code>{{ entry.user_code }}</code>  │  ⭐ {{ entry.score }}
+{{ entry.gender_emoji }} {{ entry.country_display }}  │  {% if entry.display_name %}<b>{{ entry.display_name }}</b> (<code>{{ entry.user_code }}</code>){% else %}<code>{{ entry.user_code }}</code>{% endif %}  │  ⭐ {{ entry.score }}
 {% endfor %}
 
 {% else %}

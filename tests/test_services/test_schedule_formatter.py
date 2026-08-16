@@ -9,9 +9,11 @@ import pytz
 from app.services.schedule_formatter import (
     ScheduleFormatter,
     clock_emoji_for,
+    display_name_for,
     format_time,
     _CLOCK_EMOJI,
     _GENDER_EMOJI,
+    _MAX_NAME_LEN,
 )
 
 TZ = pytz.timezone("Asia/Baghdad")
@@ -22,19 +24,38 @@ def _make_slot(hour: int, minute: int = 0):
     return SimpleNamespace(slot_datetime=TZ.localize(naive))
 
 
-def _make_user(gender=None, country_name="Malaysia", flag="🇲🇾", score=10, code="ABC123"):
+def _make_user(
+    gender=None, country_name="Malaysia", flag="🇲🇾", score=10, code="ABC123", name="Nima"
+):
     country = SimpleNamespace(name=country_name, flag_emoji=flag) if country_name else None
     return SimpleNamespace(
         gender=gender,
         country_rel=country,
         participation_score=score,
         public_user_code=code,
+        full_name=name,
     )
 
 
-def _make_reservation(hour, minute=0, gender="female", country="Malaysia", flag="🇲🇾", score=10, code="ABC"):
+def _make_reservation(
+    hour,
+    minute=0,
+    gender="female",
+    country="Malaysia",
+    flag="🇲🇾",
+    score=10,
+    code="ABC",
+    name="Nima",
+):
     return SimpleNamespace(
-        user=_make_user(gender=gender, country_name=country, flag=flag, score=score, code=code),
+        user=_make_user(
+            gender=gender,
+            country_name=country,
+            flag=flag,
+            score=score,
+            code=code,
+            name=name,
+        ),
         slot=_make_slot(hour, minute),
     )
 
@@ -101,6 +122,57 @@ class TestFormatTime:
         assert format_time(dt) == "11:00 PM"
 
 
+# ── display_name_for ───────────────────────────────────────────────────────────
+
+class TestDisplayNameFor:
+    """The one free-text field in the broadcast that the user wrote themselves."""
+
+    def test_a_plain_name_passes_through(self):
+        assert display_name_for("Nima") == "Nima"
+
+    def test_surrounding_whitespace_is_dropped(self):
+        assert display_name_for("  Nima  ") == "Nima"
+
+    def test_angle_brackets_are_escaped(self):
+        # Unescaped, this is not a cosmetic problem: Telegram rejects the whole
+        # message and every other participant loses their row too.
+        assert display_name_for("<b>Nima</b>") == "&lt;b&gt;Nima&lt;/b&gt;"
+
+    def test_ampersand_is_escaped(self):
+        assert display_name_for("Ali & Sons") == "Ali &amp; Sons"
+
+    def test_an_apostrophe_is_left_alone(self):
+        # quote=False — the name never lands in an attribute, and escaping here
+        # would show O&#x27;Brien to every reader of the channel.
+        assert display_name_for("O'Brien") == "O'Brien"
+
+    def test_arabic_is_untouched(self):
+        assert display_name_for("محمد") == "محمد"
+
+    def test_a_long_name_is_truncated_with_an_ellipsis(self):
+        result = display_name_for("A" * 100)
+        assert len(result) == _MAX_NAME_LEN
+        assert result.endswith("…")
+
+    def test_a_name_at_the_limit_is_not_truncated(self):
+        name = "B" * _MAX_NAME_LEN
+        assert display_name_for(name) == name
+
+    def test_truncation_counts_the_raw_name_not_the_escaped_one(self):
+        # Escaping inflates length ~5x per character. Measuring after it would
+        # cut a name of five ampersands down to one.
+        assert display_name_for("&" * 5) == "&amp;" * 5
+
+    def test_an_empty_name_is_empty(self):
+        assert display_name_for("") == ""
+
+    def test_a_whitespace_only_name_is_empty(self):
+        assert display_name_for("   ") == ""
+
+    def test_none_is_empty(self):
+        assert display_name_for(None) == ""
+
+
 # ── ScheduleFormatter.render ───────────────────────────────────────────────────
 
 class TestScheduleFormatter:
@@ -139,6 +211,42 @@ class TestScheduleFormatter:
         reservations = [_make_reservation(16, 0, code="ABC123")]
         text = self.formatter.render(self.channel, self.today, reservations, [])
         assert "<code>ABC123</code>" in text
+
+    def test_name_and_code_render_together(self):
+        reservations = [_make_reservation(16, 0, code="008735", name="Nima")]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "<b>Nima</b> (<code>008735</code>)" in text
+
+    def test_the_bare_id_label_is_gone(self):
+        # The code is now identified by its position beside the name, so the
+        # "ID:" prefix would just be noise on an already-crowded line.
+        reservations = [_make_reservation(16, 0, code="008735")]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "ID:" not in text
+
+    def test_a_missing_name_falls_back_to_the_bare_code(self):
+        # full_name is NOT NULL, so this is defence rather than a live path —
+        # but empty parentheses would be worse than no parentheses.
+        reservations = [_make_reservation(16, 0, code="008735", name="")]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "<code>008735</code>" in text
+        assert "()" not in text
+        assert "<b></b>" not in text
+
+    def test_a_name_with_markup_cannot_break_the_message(self):
+        reservations = [_make_reservation(16, 0, name="<i>x</i>")]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "<i>x</i>" not in text
+        assert "&lt;i&gt;x&lt;/i&gt;" in text
+
+    def test_each_reservation_shows_its_own_name(self):
+        reservations = [
+            _make_reservation(16, 0, code="U001", name="Nima"),
+            _make_reservation(16, 30, code="U002", name="Sara"),
+        ]
+        text = self.formatter.render(self.channel, self.today, reservations, [])
+        assert "<b>Nima</b> (<code>U001</code>)" in text
+        assert "<b>Sara</b> (<code>U002</code>)" in text
 
     def test_reservation_score_appears(self):
         reservations = [_make_reservation(16, 0, score=25)]

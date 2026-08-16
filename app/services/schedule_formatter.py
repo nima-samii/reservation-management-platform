@@ -1,3 +1,4 @@
+import html
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -35,6 +36,37 @@ _GENDER_EMOJI: dict[str | None, str] = {
     None: "🧑‍💼",
 }
 
+# Registration accepts up to 100 characters, which would swamp a line that
+# already carries a country, a code and a score. This bounds the display only;
+# the stored name is untouched and the code beside it is still the exact
+# identifier, so nothing that has to match anything is being shortened.
+_MAX_NAME_LEN = 32
+
+
+def display_name_for(full_name: str | None) -> str:
+    """Escape and bound a user-chosen name for the broadcast line.
+
+    The name is the only value in this message that the *user* wrote — country
+    names and channel names come from admin-curated tables — so it is the only
+    one where a stray ``<`` or ``&`` matters. The template renders with
+    ``autoescape=False`` and the result is sent as ``parse_mode="HTML"``: an
+    unescaped angle bracket does not corrupt one row, it makes Telegram reject
+    the whole message and take every other participant's row down with it.
+
+    ``quote=False`` because the name never lands inside an attribute; escaping
+    apostrophes here would only put ``&#x27;`` in front of readers of names
+    like O'Brien.
+
+    Returns an empty string for a missing name, which the template reads as
+    "fall back to the bare code".
+    """
+    name = (full_name or "").strip()
+    if not name:
+        return ""
+    if len(name) > _MAX_NAME_LEN:
+        name = name[: _MAX_NAME_LEN - 1].rstrip() + "…"
+    return html.escape(name, quote=False)
+
 
 def clock_emoji_for(dt: datetime) -> str:
     hour_12 = dt.hour % 12 or 12
@@ -53,6 +85,7 @@ class ReservationEntry:
     time: str
     gender_emoji: str
     country_display: str
+    display_name: str
     user_code: str
     score: int
 
@@ -113,6 +146,7 @@ class ScheduleFormatter:
             time=format_time(slot_local),
             gender_emoji=_GENDER_EMOJI.get(user.gender, "🧑‍💼"),
             country_display=country_display,
+            display_name=display_name_for(user.full_name),
             user_code=user.public_user_code,
             score=user.participation_score,
         )
