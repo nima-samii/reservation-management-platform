@@ -158,6 +158,19 @@ class ReservationRepository(BaseRepository[Reservation]):
 
         Half-open ``[start, end)``: the old ``<= 23:59:59.999999`` sentinel
         could miss a slot in the final fraction of a second.
+
+        Counts everything on the day except CANCELLED — deliberately not
+        ACTIVE-only. The lifecycle job flips a reservation to COMPLETED once
+        its slot has passed, so an ACTIVE-only count would quietly return the
+        day's allowance a few minutes after each session and let the user book
+        again. Whether the cap held would then depend on when a background job
+        last ran, which is not a rule anyone can reason about. Today the
+        shipped cutoff hides that (same-day booking closes at 12:00, sessions
+        start at 16:00) but both of those are admin-editable.
+
+        CANCELLED stays out: cancelling already costs the user their +1, so it
+        has to genuinely free the day. This mirrors ``uq_reservations_slot_active``,
+        which lets a cancelled row's slot be re-booked for the same reason.
         """
         day_start = TZ.localize(datetime.combine(local_date, time.min))
         day_end = TZ.localize(
@@ -168,7 +181,7 @@ class ReservationRepository(BaseRepository[Reservation]):
             .join(Reservation.slot)
             .where(
                 Reservation.user_id == user_id,
-                Reservation.status == ReservationStatus.ACTIVE,
+                Reservation.status != ReservationStatus.CANCELLED,
                 ReservationSlot.slot_datetime >= day_start,
                 ReservationSlot.slot_datetime < day_end,
             )

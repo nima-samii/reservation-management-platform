@@ -189,6 +189,50 @@ async def test_cancelled_reservations_are_not_counted(db_session):
     assert await repo.count_reservations_on_date(user.id, DAY) == 1
 
 
+async def test_completed_reservations_still_count(db_session):
+    """A session that already happened still used up the day.
+
+    The lifecycle job flips ACTIVE to COMPLETED once the slot has passed, so an
+    ACTIVE-only count would hand the allowance back minutes after each session
+    — making the cap depend on when a background job last ran. The shipped
+    cutoff currently hides that, but both the cutoff and the slot hours are
+    admin-editable, so the rule must not lean on them.
+    """
+    user = await _make_user(db_session)
+    channel = await _make_channel(db_session)
+
+    await _reserve(
+        db_session, user, channel, _local(DAY, 18), status=ReservationStatus.COMPLETED
+    )
+    await _reserve(db_session, user, channel, _local(DAY, 20))
+    await db_session.commit()
+
+    repo = ReservationRepository(db_session)
+
+    assert await repo.count_reservations_on_date(user.id, DAY) == 2
+
+
+async def test_expired_reservations_still_count(db_session):
+    """EXPIRED is declared but currently unwritten by any code path.
+
+    Pinned anyway: the predicate is "anything but cancelled", so if EXPIRED is
+    ever introduced — most plausibly for no-shows — it counts by default. A
+    no-show consumed the slot, so that is the behaviour we want; this test is
+    here to make the choice deliberate rather than incidental.
+    """
+    user = await _make_user(db_session)
+    channel = await _make_channel(db_session)
+
+    await _reserve(
+        db_session, user, channel, _local(DAY, 18), status=ReservationStatus.EXPIRED
+    )
+    await db_session.commit()
+
+    repo = ReservationRepository(db_session)
+
+    assert await repo.count_reservations_on_date(user.id, DAY) == 1
+
+
 async def test_another_users_reservations_are_not_counted(db_session):
     """The limit is per user, not per day globally."""
     user = await _make_user(db_session)
