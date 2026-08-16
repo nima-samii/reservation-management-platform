@@ -1,8 +1,13 @@
-"""The daily limit under genuine concurrency — real PostgreSQL, two connections.
+"""The per-user booking checks under genuine concurrency — real PostgreSQL, two
+connections.
 
-The daily check is a read-then-write: count the user's reservations for a day,
-and insert one if there is room. Nothing in the booking path used to serialise
-that pair *per user*. The Redis advisory lock is keyed on the contended slot
+Two rules are read-then-write per user: the daily cap (count the day's
+reservations, insert if there is room) and the same-instant rule (look for a
+reservation at that time, insert if there is none). Both are guarded by the
+same thing — the user row locked FOR UPDATE — so both are pinned here.
+
+Nothing in the booking path used to serialise that pair *per user*. The Redis
+advisory lock is keyed on the contended slot
 (or on user+time under SEQUENTIAL_FILL), so two bookings for two different
 slots on the same day take two different keys and never meet; the row locks
 taken during resolution are per-slot for the same reason. Two transactions
@@ -12,8 +17,8 @@ Worse, the Redis lock is released in `_book`'s `finally` while the surrounding
 transaction is still open — the commit happens later, in DbSessionMiddleware —
 so even a same-key pair is not serialised all the way through the write.
 
-These tests pin the fix: the user row is locked FOR UPDATE before the count is
-read, and Postgres holds that lock until COMMIT. They must be run on two
+These tests pin the fix: the user row is locked FOR UPDATE before either check
+is read, and Postgres holds that lock until COMMIT. They must be run on two
 sessions on two connections; a single session cannot express a race, because
 the second half would simply see the first half's uncommitted work.
 """
@@ -30,7 +35,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.config import settings
-from app.core.exceptions import DailyLimitError, SlotUnavailableError
+from app.core.exceptions import (
+    DailyLimitError,
+    DuplicateSlotTimeError,
+    SlotUnavailableError,
+)
 from app.db.base import Base
 from app.db.models.channel import Channel
 from app.db.models.reservation import Reservation
@@ -316,3 +325,120 @@ async def test_two_users_racing_for_one_slot_still_resolve_without_deadlock(
 
     assert len(booked) == 1, f"expected exactly one winner, got {outcomes}"
     assert len(refused) == 1, f"expected exactly one refusal, got {outcomes}"
+
+
+# ── the same instant on two channels ──────────────────────────────────────────
+
+
+@pytest.fixture
+def roomy_day():
+    """Raise the daily cap out of the way, restoring it afterwards.
+
+    The same-instant tests below need a day that allows more than one booking —
+    otherwise the daily cap refuses the second attempt first and the rule under
+    test is never reached.
+    """
+    original = settings.MAX_DAILY_RESERVATIONS
+    object.__setattr__(settings, "MAX_DAILY_RESERVATIONS", 5)
+    yield
+    object.__setattr__(settings, "MAX_DAILY_RESERVATIONS", original)
+
+
+async def test_the_same_instant_on_two_channels_cannot_both_win(
+    sessions, redis, roomy_day
+):
+    """The race the same-instant rule has to survive.
+
+    Two channels means two distinct free rows at 18:00, so the Redis lock keys
+    differ and the per-slot row locks never meet — the two bookings only ever
+    contend on the user row. Without that lock both read "no reservation at
+    18:00" and both insert, and the user ends the day booked into two live
+    sessions at once.
+    """
+    setup = sessions()
+    user = await _make_user(setup)
+    channel_a = await _make_channel(setup)
+    channel_b = await _make_channel(setup)
+    day = _day()
+    at_18 = _at(day, 18)
+    (slot_a,) = await _make_slots(setup, channel_a, [at_18])
+    (slot_b,) = await _make_slots(setup, channel_b, [at_18])
+
+    first, second = sessions(), sessions()
+
+    # `first` has booked 18:00 on channel A but NOT committed.
+    await _book(first, redis, user, slot_a)
+
+    # `second` goes for 18:00 on channel B and must block on the user row.
+    racer = asyncio.create_task(_book(second, redis, user, slot_b))
+    await asyncio.sleep(_CONTENTION_WINDOW)
+
+    await first.commit()
+
+    with pytest.raises(DuplicateSlotTimeError):
+        await racer
+
+    assert await _count_reservations(setup, user) == 1
+
+
+async def test_two_different_times_on_two_channels_both_succeed(
+    sessions, redis, roomy_day
+):
+    """The rule must bite on the instant, not on the day or the channel.
+
+    Same user, same day, two channels, but 18:00 and 20:00 — two sessions
+    nobody has to be in two places for. With the daily cap out of the way both
+    must be allowed through, even though they serialise on the same user row.
+    """
+    setup = sessions()
+    user = await _make_user(setup)
+    channel_a = await _make_channel(setup)
+    channel_b = await _make_channel(setup)
+    day = _day()
+    (slot_a,) = await _make_slots(setup, channel_a, [_at(day, 18)])
+    (slot_b,) = await _make_slots(setup, channel_b, [_at(day, 20)])
+
+    first, second = sessions(), sessions()
+
+    await _book(first, redis, user, slot_a)
+
+    racer = asyncio.create_task(_book(second, redis, user, slot_b))
+    await asyncio.sleep(_CONTENTION_WINDOW)
+
+    await first.commit()
+
+    reservation = await racer
+    await second.commit()
+
+    assert reservation is not None
+    assert await _count_reservations(setup, user) == 2
+
+
+async def test_an_admin_booking_cannot_double_book_the_instant_either(
+    sessions, redis, roomy_day
+):
+    """Admin creation shares the booking core, so it shares the rule — an admin
+    placing a user into 18:00 on a second channel is the same impossibility as
+    the user doing it themselves."""
+    setup = sessions()
+    user = await _make_user(setup)
+    channel_a = await _make_channel(setup)
+    channel_b = await _make_channel(setup)
+    day = _day()
+    at_18 = _at(day, 18)
+    (slot_a,) = await _make_slots(setup, channel_a, [at_18])
+    (slot_b,) = await _make_slots(setup, channel_b, [at_18])
+
+    by_user, by_admin = sessions(), sessions()
+
+    await _book(by_user, redis, user, slot_a)
+
+    racer = asyncio.create_task(_admin_book(by_admin, redis, user, slot_b))
+    await asyncio.sleep(_CONTENTION_WINDOW)
+
+    await by_user.commit()
+
+    with pytest.raises(DuplicateSlotTimeError):
+        await racer
+
+    assert await _count_reservations(setup, user) == 1

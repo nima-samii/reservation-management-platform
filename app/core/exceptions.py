@@ -60,6 +60,31 @@ class DailyLimitError(ReservationError):
         self.max_per_day = max_per_day
 
 
+class DuplicateSlotTimeError(ReservationError):
+    """Raised when a booking would give one user two sessions at the same instant.
+
+    Slots are unique per ``(slot_datetime, channel_id)``, so one clock time
+    exists as one row per channel. Nothing stopped a user from taking two of
+    them — they are different rows, each free, each within the daily cap once
+    that cap is above 1. They are also the same hour of the same evening, and
+    nobody can attend two live sessions at once.
+
+    Distinct from :class:`SlotUnavailableError`: the slot really is free, it
+    just runs at a time this user is already booked for.
+
+    Unlike the daily and active caps this is not configurable. It is not a
+    policy dial but a fact about the user — there is no setting at which
+    being in two places at once becomes possible.
+    """
+
+    def __init__(self, local_time: str | None = None) -> None:
+        at = f" at {local_time}" if local_time else " at this time"
+        super().__init__(
+            f"You already have a reservation{at}. Please choose a different time."
+        )
+        self.local_time = local_time
+
+
 class MaxReservationsError(ReservationError):
     def __init__(self, max_count: int) -> None:
         super().__init__(

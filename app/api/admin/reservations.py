@@ -30,6 +30,7 @@ from app.cache.client import redis_client
 from app.core.config import settings
 from app.core.exceptions import (
     DailyLimitError,
+    DuplicateSlotTimeError,
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
@@ -288,9 +289,10 @@ async def create_reservation(
     """Admin-create a reservation for an existing user.
 
     Goes through the same booking core as user booking — identical validation
-    (daily limit, max active, double-booking, past-slot, same-day cutoff) and
-    the standard +1 score reward. Banned users are rejected. A confirmation DM
-    is sent to the user out-of-band after this request commits.
+    (daily limit, max active, duplicate time, double-booking, past-slot,
+    same-day cutoff) and the standard +1 score reward. Banned users are
+    rejected. A confirmation DM is sent to the user out-of-band after this
+    request commits.
     """
     svc = ReservationService(session, redis_client)
     try:
@@ -301,7 +303,12 @@ async def create_reservation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
     except UserBannedError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
-    except (DailyLimitError, MaxReservationsError, SlotUnavailableError) as exc:
+    except (
+        DailyLimitError,
+        DuplicateSlotTimeError,
+        MaxReservationsError,
+        SlotUnavailableError,
+    ) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
     except (PastSlotError, SameDayCutoffError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)

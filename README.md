@@ -285,6 +285,7 @@ created_at
 | Rule | Value |
 |---|---|
 | Sessions per day (per user) | 1 by default — set in the admin panel (`MAX_DAILY_RESERVATIONS`) |
+| Same session time twice | Never — one reservation per user per start time, across all channels. Not configurable |
 | Max active (future) reservations | 10 |
 | Booking window | Next 14 days |
 | Session hours | 4:00 PM – 11:30 PM + optional 11:59 PM terminal slot (Asia/Baghdad) |

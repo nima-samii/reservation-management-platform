@@ -189,6 +189,41 @@ class ReservationRepository(BaseRepository[Reservation]):
         result = await self.session.execute(stmt)
         return result.scalar() or 0
 
+    async def has_reservation_at_time(
+        self, user_id: uuid.UUID, slot_datetime: datetime
+    ) -> bool:
+        """Whether the user already holds a reservation starting at this instant.
+
+        Compares ``slot_datetime`` exactly, not by hour. Slots are generated
+        SLOT_DURATION_MINUTES apart and do not overlap, so two of a user's
+        reservations collide only when they name the same instant — 16:00 and
+        16:30 are two different sessions and must both stay bookable.
+
+        The comparison is against an aware datetime read back from a slot row,
+        so the ``timestamptz`` equality is between two instants and no timezone
+        reasoning is involved; this is the one query on this model that needs
+        none.
+
+        Same status rule as :meth:`count_reservations_on_date`, and for the same
+        reasons: everything but CANCELLED. A COMPLETED reservation means the
+        user attended that time, and a cancelled one genuinely frees it.
+
+        Returns a bool rather than a count: the cap here is structurally one, so
+        there is no number worth reporting and ``LIMIT 1`` is enough work.
+        """
+        stmt = (
+            select(Reservation.id)
+            .join(Reservation.slot)
+            .where(
+                Reservation.user_id == user_id,
+                Reservation.status != ReservationStatus.CANCELLED,
+                ReservationSlot.slot_datetime == slot_datetime,
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first() is not None
+
     async def get_reservation_with_details(
         self, reservation_id: uuid.UUID
     ) -> Reservation | None:

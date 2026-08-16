@@ -11,6 +11,7 @@ from app.core.booking_rules import is_same_day_cutoff_passed
 from app.core.exceptions import (
     CancellationCutoffError,
     DailyLimitError,
+    DuplicateSlotTimeError,
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
@@ -144,8 +145,8 @@ class ReservationService:
 
         Goes through the exact same booking core as user booking (``_book`` →
         ``_perform_booking``): identical locking, validation (daily limit, max
-        active, double-booking, past-slot, same-day cutoff) and the standard +1
-        score reward. The only admin-specific additions are the up-front
+        active, duplicate time, double-booking, past-slot, same-day cutoff) and
+        the standard +1 score reward. The only admin-specific additions are the up-front
         existence/ban checks and an out-of-band confirmation DM (the user is not
         in a chat flow, so unlike user booking there is no inline confirmation).
 
@@ -226,6 +227,19 @@ class ReservationService:
         active_count = await self._res_repo.count_active_reservations(user_id, now)
         if active_count >= settings.MAX_ACTIVE_RESERVATIONS:
             raise MaxReservationsError(settings.MAX_ACTIVE_RESERVATIONS)
+
+        # Checked against the *resolved* row's time, not the requested one, so
+        # it holds for a strategy that re-picks the channel as much as for one
+        # that books what was named.
+        #
+        # Deliberately last of the three. The two caps above are blanket blocks
+        # on the day and on the user, and this error tells the user to pick a
+        # different time — advice that would be false if either cap were the
+        # thing actually stopping them.
+        if await self._res_repo.has_reservation_at_time(user_id, slot.slot_datetime):
+            raise DuplicateSlotTimeError(
+                slot.slot_datetime.astimezone(TZ).strftime("%I:%M %p")
+            )
 
         slot.is_booked = True
         await self._slot_repo.save(slot)

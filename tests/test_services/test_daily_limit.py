@@ -69,6 +69,9 @@ async def _attempt(service, *, already_booked: int):
     service._slot_repo.get_slot_with_lock = AsyncMock(return_value=slot)
     service._res_repo.count_reservations_on_date = AsyncMock(return_value=already_booked)
     service._res_repo.count_active_reservations = AsyncMock(return_value=0)
+    # The same-time rule is a separate axis with its own module; keep it out of
+    # the way so a cap failure here can only mean the cap.
+    service._res_repo.has_reservation_at_time = AsyncMock(return_value=False)
     service._res_repo.create = AsyncMock(return_value=reservation)
     service._res_repo.get_reservation_with_details = AsyncMock(return_value=reservation)
     service._score_svc.award_reservation_reward = AsyncMock(
@@ -177,6 +180,7 @@ async def test_the_cap_is_counted_over_the_slot_s_local_date(service, daily_limi
     service._slot_repo.get_slot_with_lock = AsyncMock(return_value=slot)
     service._res_repo.count_reservations_on_date = AsyncMock(return_value=0)
     service._res_repo.count_active_reservations = AsyncMock(return_value=0)
+    service._res_repo.has_reservation_at_time = AsyncMock(return_value=False)
     service._res_repo.create = AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4()))
     service._res_repo.get_reservation_with_details = AsyncMock(return_value=SimpleNamespace())
     service._score_svc.award_reservation_reward = AsyncMock(
