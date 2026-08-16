@@ -220,8 +220,8 @@ class ReservationService:
         daily_count = await self._res_repo.count_reservations_on_date(
             user_id, slot_local_date
         )
-        if daily_count >= 1:
-            raise DailyLimitError()
+        if daily_count >= settings.MAX_DAILY_RESERVATIONS:
+            raise DailyLimitError(settings.MAX_DAILY_RESERVATIONS)
 
         active_count = await self._res_repo.count_active_reservations(user_id, now)
         if active_count >= settings.MAX_ACTIVE_RESERVATIONS:

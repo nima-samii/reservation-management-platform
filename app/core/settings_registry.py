@@ -109,6 +109,18 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         value_type=int, example=10, validator="int_range", min=1, max=50,
     ),
     SettingMeta(
+        key="MAX_DAILY_RESERVATIONS", json_key="max_daily_reservations",
+        category="reservation_rules", label="Max reservations per day",
+        description=(
+            "Per-user cap on reservations for a single calendar day, in the local "
+            "timezone. Every reservation on that day counts except cancelled ones. "
+            "Independent of the active-reservations cap above — whichever limit is "
+            "reached first applies. Only affects new bookings; reservations already "
+            "made are never revoked by lowering this."
+        ),
+        value_type=int, example=1, validator="int_range", min=1, max=10,
+    ),
+    SettingMeta(
         key="MAX_RESERVATION_DAYS_AHEAD", json_key="max_reservation_days_ahead",
         category="reservation_rules", label="Max days ahead",
         description="How far in advance a user may book a slot.",

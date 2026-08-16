@@ -39,8 +39,25 @@ class SlotUnavailableError(ReservationError):
 
 
 class DailyLimitError(ReservationError):
-    def __init__(self) -> None:
-        super().__init__("You already have a reservation for this day.")
+    """Raised when a booking would exceed the per-day cap for that user.
+
+    The default of 1 keeps every existing call site and test working, and makes
+    the singular wording the fallback rather than something a caller has to
+    remember to ask for.
+    """
+
+    def __init__(self, max_per_day: int = 1) -> None:
+        # "a maximum of 1 reservations" is not a sentence — at the default cap
+        # the rule is better stated as the fact the user has already hit it.
+        if max_per_day <= 1:
+            message = "You already have a reservation for this day."
+        else:
+            message = (
+                f"You have reached the maximum of {max_per_day} reservations "
+                "for this day."
+            )
+        super().__init__(message)
+        self.max_per_day = max_per_day
 
 
 class MaxReservationsError(ReservationError):

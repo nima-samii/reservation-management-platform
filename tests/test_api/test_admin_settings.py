@@ -176,6 +176,89 @@ async def test_patch_valid_change_persists_and_roundtrips(client):
     assert settings.RATE_LIMIT_REQUESTS == 45
 
 
+# ── Max reservations per day ──────────────────────────────────────────────
+
+
+def test_max_daily_reservations_defaults_to_one():
+    """The backward-compatibility guarantee: an install that never sets this
+    behaves exactly as it did when the rule was hard-coded."""
+    assert settings.MAX_DAILY_RESERVATIONS == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_max_daily_reservations_roundtrips(client):
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"max_daily_reservations": 3}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reservation_rules"]["max_daily_reservations"] == 3
+    # The booking path reads the singleton, so the change has to land there and
+    # not only in the response body.
+    assert settings.MAX_DAILY_RESERVATIONS == 3
+
+    resp2 = await client.get("/api/admin/settings")
+    assert resp2.json()["reservation_rules"]["max_daily_reservations"] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1, 11])
+async def test_patch_max_daily_reservations_out_of_range_422(client, bad):
+    """Zero is rejected on purpose: it would be a silent, global booking
+    kill-switch hiding in a field named as a cap."""
+    resp = await client.patch(
+        "/api/admin/settings",
+        json={"reservation_rules": {"max_daily_reservations": bad}},
+    )
+    assert resp.status_code == 422
+    assert settings.MAX_DAILY_RESERVATIONS == 1
+
+
+@pytest.mark.asyncio
+async def test_max_daily_reservations_is_offered_as_a_reservation_rule(client):
+    resp = await client.get("/api/admin/settings/metadata")
+    fields = {
+        f["key"]: f
+        for cat in resp.json()
+        if cat["key"] == "reservation_rules"
+        for f in cat["fields"]
+    }
+    meta = fields["max_daily_reservations"]
+    assert meta["type"] == "int"
+    assert (meta["min"], meta["max"]) == (1, 10)
+    # No widget hint and no choices ⇒ the panel renders its default number
+    # input, which is what makes this a zero-change addition on the frontend.
+    assert meta["widget"] is None
+    assert meta["choices"] is None
+    assert meta["restart_behavior"] == "live"
+
+
+def test_load_settings_override_applies_max_daily_reservations(tmp_path, monkeypatch):
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"MAX_DAILY_RESERVATIONS": 4}), encoding="utf-8"
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.MAX_DAILY_RESERVATIONS == 4
+
+
+def test_load_settings_override_without_the_key_keeps_the_default(tmp_path, monkeypatch):
+    """The rollout case: deploying the new code over an existing override file
+    must not change how anything books."""
+    override_path = tmp_path / "admin_settings_override.json"
+    override_path.write_text(
+        json.dumps({"RATE_LIMIT_REQUESTS": 31}), encoding="utf-8"
+    )
+    monkeypatch.setattr("app.core.config.SETTINGS_OVERRIDE_PATH", override_path)
+
+    load_settings_override()
+
+    assert settings.MAX_DAILY_RESERVATIONS == 1
+
+
 @pytest.mark.asyncio
 async def test_patch_broadcast_hour_reschedules_running_job(client, monkeypatch):
     """Changing a scheduler hour reschedules the live job (no restart needed)."""
