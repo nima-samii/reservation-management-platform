@@ -1,9 +1,10 @@
 import json
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
+import pytz
 import sqlalchemy as sa
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +13,8 @@ from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 from app.repositories.base import BaseRepository
+
+TZ = pytz.timezone(settings.TIMEZONE)
 
 
 def _parse_notes(notes: str | None) -> dict:
@@ -132,26 +135,94 @@ class ReservationRepository(BaseRepository[Reservation]):
         result = await self.session.execute(stmt)
         return (result.rowcount or 0) > 0
 
-    async def has_reservation_on_date(
-        self, user_id: uuid.UUID, target_date: datetime
+    async def count_reservations_on_date(
+        self, user_id: uuid.UUID, local_date: date
+    ) -> int:
+        """Count a user's reservations falling on a *local* calendar day.
+
+        Takes the local date, not a datetime. The predecessor derived the day
+        window from a slot's ``slot_datetime``, which asyncpg hands back as
+        UTC — so "day" silently meant the UTC calendar day. With slots at
+        16:00-23:59 Asia/Baghdad (13:00-20:59 UTC) the two coincide and the bug
+        never showed, but SLOT_START_HOUR is admin-editable down to 0, and a
+        local 00:00-02:59 slot lands on the *previous* UTC day.
+
+        Bounds are two independently localized midnights rather than
+        ``start + 24h``: a local day is not 24 hours long across a DST
+        transition. Asia/Baghdad has no DST today; this must not depend on that.
+
+        The window compares the indexed column directly instead of using the
+        ``cast(timezone(TZ, slot_datetime), Date) == :d`` form the admin-list
+        queries below use. Both are correct, but a cast over the column is not
+        sargable — this form can use the btree index on ``slot_datetime``.
+
+        Half-open ``[start, end)``: the old ``<= 23:59:59.999999`` sentinel
+        could miss a slot in the final fraction of a second.
+
+        Counts everything on the day except CANCELLED — deliberately not
+        ACTIVE-only. The lifecycle job flips a reservation to COMPLETED once
+        its slot has passed, so an ACTIVE-only count would quietly return the
+        day's allowance a few minutes after each session and let the user book
+        again. Whether the cap held would then depend on when a background job
+        last ran, which is not a rule anyone can reason about. Today the
+        shipped cutoff hides that (same-day booking closes at 12:00, sessions
+        start at 16:00) but both of those are admin-editable.
+
+        CANCELLED stays out: cancelling already costs the user their +1, so it
+        has to genuinely free the day. This mirrors ``uq_reservations_slot_active``,
+        which lets a cancelled row's slot be re-booked for the same reason.
+        """
+        day_start = TZ.localize(datetime.combine(local_date, time.min))
+        day_end = TZ.localize(
+            datetime.combine(local_date + timedelta(days=1), time.min)
+        )
+        stmt = (
+            select(func.count(Reservation.id))
+            .join(Reservation.slot)
+            .where(
+                Reservation.user_id == user_id,
+                Reservation.status != ReservationStatus.CANCELLED,
+                ReservationSlot.slot_datetime >= day_start,
+                ReservationSlot.slot_datetime < day_end,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar() or 0
+
+    async def has_reservation_at_time(
+        self, user_id: uuid.UUID, slot_datetime: datetime
     ) -> bool:
-        day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        """Whether the user already holds a reservation starting at this instant.
+
+        Compares ``slot_datetime`` exactly, not by hour. Slots are generated
+        SLOT_DURATION_MINUTES apart and do not overlap, so two of a user's
+        reservations collide only when they name the same instant — 16:00 and
+        16:30 are two different sessions and must both stay bookable.
+
+        The comparison is against an aware datetime read back from a slot row,
+        so the ``timestamptz`` equality is between two instants and no timezone
+        reasoning is involved; this is the one query on this model that needs
+        none.
+
+        Same status rule as :meth:`count_reservations_on_date`, and for the same
+        reasons: everything but CANCELLED. A COMPLETED reservation means the
+        user attended that time, and a cancelled one genuinely frees it.
+
+        Returns a bool rather than a count: the cap here is structurally one, so
+        there is no number worth reporting and ``LIMIT 1`` is enough work.
+        """
         stmt = (
             select(Reservation.id)
             .join(Reservation.slot)
             .where(
-                and_(
-                    Reservation.user_id == user_id,
-                    Reservation.status == ReservationStatus.ACTIVE,
-                    ReservationSlot.slot_datetime >= day_start,
-                    ReservationSlot.slot_datetime <= day_end,
-                )
+                Reservation.user_id == user_id,
+                Reservation.status != ReservationStatus.CANCELLED,
+                ReservationSlot.slot_datetime == slot_datetime,
             )
             .limit(1)
         )
         result = await self.session.execute(stmt)
-        return result.scalar() is not None
+        return result.scalars().first() is not None
 
     async def get_reservation_with_details(
         self, reservation_id: uuid.UUID

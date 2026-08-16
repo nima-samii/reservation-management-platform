@@ -11,6 +11,7 @@ from app.core.booking_rules import is_same_day_cutoff_passed
 from app.core.exceptions import (
     CancellationCutoffError,
     DailyLimitError,
+    DuplicateSlotTimeError,
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
@@ -144,8 +145,8 @@ class ReservationService:
 
         Goes through the exact same booking core as user booking (``_book`` →
         ``_perform_booking``): identical locking, validation (daily limit, max
-        active, double-booking, past-slot, same-day cutoff) and the standard +1
-        score reward. The only admin-specific additions are the up-front
+        active, duplicate time, double-booking, past-slot, same-day cutoff) and
+        the standard +1 score reward. The only admin-specific additions are the up-front
         existence/ban checks and an out-of-band confirmation DM (the user is not
         in a chat flow, so unlike user booking there is no inline confirmation).
 
@@ -180,6 +181,23 @@ class ReservationService:
         *,
         strategy: SlotResolutionStrategy | None = None,
     ) -> Reservation:
+        """The single implementation of booking, shared by both entry points.
+
+        Locks are taken in a fixed order — **user row, then slot row** — and
+        every booking path goes through here, so no two bookings can acquire
+        them in opposite orders and deadlock. Anything added later that needs
+        both must keep this order.
+        """
+        # Serialises this user's concurrent bookings for the rest of the
+        # transaction, so the per-user checks below (daily limit, max active)
+        # are read-then-write against state nobody else can change underneath
+        # them. Taken before slot resolution to fix the lock order; see
+        # UserRepository.get_by_id_for_update for why the Redis lock and the
+        # per-slot row locks cannot serve this purpose.
+        locked_user = await self._user_repo.get_by_id_for_update(user_id)
+        if not locked_user:
+            raise NotFoundError("User")
+
         # Picking the physical slot is the only part of booking a strategy may
         # change; everything below is shared and must stay identical for all of
         # them. Defaults to booking exactly the referenced row.
@@ -197,15 +215,31 @@ class ReservationService:
         if slot.is_booked:
             raise SlotUnavailableError()
 
-        day_conflict = await self._res_repo.has_reservation_on_date(
-            user_id, slot.slot_datetime
+        # Counted against the *local* calendar day, reusing the same
+        # slot_local_date the cutoff rule above was evaluated on — the two must
+        # never disagree about which day a slot belongs to.
+        daily_count = await self._res_repo.count_reservations_on_date(
+            user_id, slot_local_date
         )
-        if day_conflict:
-            raise DailyLimitError()
+        if daily_count >= settings.MAX_DAILY_RESERVATIONS:
+            raise DailyLimitError(settings.MAX_DAILY_RESERVATIONS)
 
         active_count = await self._res_repo.count_active_reservations(user_id, now)
         if active_count >= settings.MAX_ACTIVE_RESERVATIONS:
             raise MaxReservationsError(settings.MAX_ACTIVE_RESERVATIONS)
+
+        # Checked against the *resolved* row's time, not the requested one, so
+        # it holds for a strategy that re-picks the channel as much as for one
+        # that books what was named.
+        #
+        # Deliberately last of the three. The two caps above are blanket blocks
+        # on the day and on the user, and this error tells the user to pick a
+        # different time — advice that would be false if either cap were the
+        # thing actually stopping them.
+        if await self._res_repo.has_reservation_at_time(user_id, slot.slot_datetime):
+            raise DuplicateSlotTimeError(
+                slot.slot_datetime.astimezone(TZ).strftime("%I:%M %p")
+            )
 
         slot.is_booked = True
         await self._slot_repo.save(slot)
