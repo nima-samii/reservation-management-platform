@@ -180,6 +180,23 @@ class ReservationService:
         *,
         strategy: SlotResolutionStrategy | None = None,
     ) -> Reservation:
+        """The single implementation of booking, shared by both entry points.
+
+        Locks are taken in a fixed order — **user row, then slot row** — and
+        every booking path goes through here, so no two bookings can acquire
+        them in opposite orders and deadlock. Anything added later that needs
+        both must keep this order.
+        """
+        # Serialises this user's concurrent bookings for the rest of the
+        # transaction, so the per-user checks below (daily limit, max active)
+        # are read-then-write against state nobody else can change underneath
+        # them. Taken before slot resolution to fix the lock order; see
+        # UserRepository.get_by_id_for_update for why the Redis lock and the
+        # per-slot row locks cannot serve this purpose.
+        locked_user = await self._user_repo.get_by_id_for_update(user_id)
+        if not locked_user:
+            raise NotFoundError("User")
+
         # Picking the physical slot is the only part of booking a strategy may
         # change; everything below is shared and must stay identical for all of
         # them. Defaults to booking exactly the referenced row.
