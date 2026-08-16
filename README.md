@@ -284,7 +284,7 @@ created_at
 
 | Rule | Value |
 |---|---|
-| Sessions per day (per user) | 1 |
+| Sessions per day (per user) | 1 by default — set in the admin panel (`MAX_DAILY_RESERVATIONS`) |
 | Max active (future) reservations | 10 |
 | Booking window | Next 14 days |
 | Session hours | 4:00 PM – 11:30 PM + optional 11:59 PM terminal slot (Asia/Baghdad) |
@@ -384,6 +384,7 @@ The layout is rendered by `app/templates/schedule_message.j2`. Special event blo
 | Variable | Default | Description |
 |---|---|---|
 | `MAX_ACTIVE_RESERVATIONS` | `10` | Max future active reservations per user |
+| `MAX_DAILY_RESERVATIONS` | `1` | Max reservations per user on one local calendar day. Counts every reservation that day except cancelled ones |
 | `MAX_RESERVATION_DAYS_AHEAD` | `14` | Booking window in days |
 | `RESERVATION_STRATEGY` | `THRESHOLD_UNLOCK` | How slots are offered and which channel a booking lands on — `THRESHOLD_UNLOCK` or `SEQUENTIAL_FILL` |
 | `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Daily fill ratio to unlock the next channel. Ignored under `SEQUENTIAL_FILL` |

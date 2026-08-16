@@ -313,11 +313,12 @@ async def confirm_reservation(
             )
             await state.clear()
         return
-    except DailyLimitError:
+    except DailyLimitError as e:
+        # The cap is configurable, so the sentence has to come from the
+        # exception rather than be written here — same as MaxReservationsError
+        # below.
         await callback.message.edit_text(  # type: ignore[union-attr]
-            "⚠️ *Daily Limit Reached*\n\n"
-            "You already have a reservation on this day.\n"
-            "Only one reservation per day is allowed.",
+            f"⚠️ *Daily Limit Reached*\n\n{e.message}",
             parse_mode="Markdown",
         )
         await state.clear()
