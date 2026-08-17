@@ -73,6 +73,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 - Atomic SQL updates (`participation_score = participation_score + delta`) — no read-modify-write race
 - Score visible in user profile and in daily broadcasts
 - Extensible: no-show penalty and admin manual adjustment already implemented
+- **Off-platform awards** — the program's own scoring rules (hosting a live broadcast, referrals, joint broadcasts, in-person courses) are activities the bot cannot observe. They reach the ledger as `ADMIN_ADJUSTMENT` rows applied from the admin panel; the help screen documents the rules and says explicitly that an admin awards them
 
 ### Notification & Reminder System
 
@@ -87,7 +88,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 - **Per-channel broadcast** — at `DAILY_BROADCAST_HOUR` (default 12:00 PM), today's session schedule is published to every active Telegram channel
 - **Channel isolation** — each channel receives only its own reservations; timezone-correct date casting (`AT TIME ZONE`) for accurate local-day filtering
 - **Jinja2 template** — message layout lives in `app/templates/schedule_message.j2`; update the template without touching Python
-- **Reservation entries** — each entry shows time, clock emoji, gender emoji, country flag, public user ID, and participation score
+- **Reservation entries** — each entry shows time, clock emoji, gender emoji, country flag, the participant's name + public user ID, and participation score
 - **Special event blocks** — insert rows into `schedule_events` (with `channel_id=NULL` for global events) to inject custom blocks (e.g. "Collective Dhikr") without code changes
 - **Auto-pin** — new broadcast is pinned; previous day's message is unpinned (controlled by `ENABLE_BROADCAST_AUTO_PIN` and `DELETE_PREVIOUS_BROADCAST`)
 - **Deduplication** — `broadcast_logs` with `UNIQUE(channel_id, broadcast_date)` prevents double-broadcast; failed attempts are retried on the next run
