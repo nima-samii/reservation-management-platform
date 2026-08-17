@@ -18,6 +18,7 @@ from app.api.admin.deps import get_current_admin
 from app.api.main import create_app
 from app.core.exceptions import (
     DailyLimitError,
+    DuplicateSlotTimeError,
     NotFoundError,
     SlotUnavailableError,
     UserBannedError,
@@ -143,6 +144,21 @@ async def test_create_daily_limit_returns_409(client, monkeypatch):
     resp = await client.post("/api/admin/reservations", json=_body())
 
     assert resp.status_code == 409
+    client._audit_log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_duplicate_slot_time_returns_409(client, monkeypatch):
+    """A conflict with the user's own schedule, not a validation error: the
+    request is well-formed and the slot exists, it just cannot be granted."""
+    _patch_service(monkeypatch, side_effect=DuplicateSlotTimeError("06:00 PM"))
+
+    resp = await client.post("/api/admin/reservations", json=_body())
+
+    assert resp.status_code == 409
+    # The admin panel renders `detail` as-is, so the time has to survive the
+    # trip rather than be flattened into a generic message.
+    assert "06:00 PM" in resp.json()["detail"]
     client._audit_log.assert_not_awaited()
 
 

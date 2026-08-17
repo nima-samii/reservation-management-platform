@@ -39,8 +39,50 @@ class SlotUnavailableError(ReservationError):
 
 
 class DailyLimitError(ReservationError):
-    def __init__(self) -> None:
-        super().__init__("You already have a reservation for this day.")
+    """Raised when a booking would exceed the per-day cap for that user.
+
+    The default of 1 keeps every existing call site and test working, and makes
+    the singular wording the fallback rather than something a caller has to
+    remember to ask for.
+    """
+
+    def __init__(self, max_per_day: int = 1) -> None:
+        # "a maximum of 1 reservations" is not a sentence — at the default cap
+        # the rule is better stated as the fact the user has already hit it.
+        if max_per_day <= 1:
+            message = "You already have a reservation for this day."
+        else:
+            message = (
+                f"You have reached the maximum of {max_per_day} reservations "
+                "for this day."
+            )
+        super().__init__(message)
+        self.max_per_day = max_per_day
+
+
+class DuplicateSlotTimeError(ReservationError):
+    """Raised when a booking would give one user two sessions at the same instant.
+
+    Slots are unique per ``(slot_datetime, channel_id)``, so one clock time
+    exists as one row per channel. Nothing stopped a user from taking two of
+    them — they are different rows, each free, each within the daily cap once
+    that cap is above 1. They are also the same hour of the same evening, and
+    nobody can attend two live sessions at once.
+
+    Distinct from :class:`SlotUnavailableError`: the slot really is free, it
+    just runs at a time this user is already booked for.
+
+    Unlike the daily and active caps this is not configurable. It is not a
+    policy dial but a fact about the user — there is no setting at which
+    being in two places at once becomes possible.
+    """
+
+    def __init__(self, local_time: str | None = None) -> None:
+        at = f" at {local_time}" if local_time else " at this time"
+        super().__init__(
+            f"You already have a reservation{at}. Please choose a different time."
+        )
+        self.local_time = local_time
 
 
 class MaxReservationsError(ReservationError):

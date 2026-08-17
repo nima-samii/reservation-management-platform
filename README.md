@@ -73,6 +73,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 - Atomic SQL updates (`participation_score = participation_score + delta`) — no read-modify-write race
 - Score visible in user profile and in daily broadcasts
 - Extensible: no-show penalty and admin manual adjustment already implemented
+- **Off-platform awards** — the program's own scoring rules (hosting a live broadcast, referrals, joint broadcasts, in-person courses) are activities the bot cannot observe. They reach the ledger as `ADMIN_ADJUSTMENT` rows applied from the admin panel; the help screen documents the rules and says explicitly that an admin awards them
 
 ### Notification & Reminder System
 
@@ -87,7 +88,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 - **Per-channel broadcast** — at `DAILY_BROADCAST_HOUR` (default 12:00 PM), today's session schedule is published to every active Telegram channel
 - **Channel isolation** — each channel receives only its own reservations; timezone-correct date casting (`AT TIME ZONE`) for accurate local-day filtering
 - **Jinja2 template** — message layout lives in `app/templates/schedule_message.j2`; update the template without touching Python
-- **Reservation entries** — each entry shows time, clock emoji, gender emoji, country flag, public user ID, and participation score
+- **Reservation entries** — each entry shows time, clock emoji, gender emoji, country flag, the participant's name + public user ID, and participation score
 - **Special event blocks** — insert rows into `schedule_events` (with `channel_id=NULL` for global events) to inject custom blocks (e.g. "Collective Dhikr") without code changes
 - **Auto-pin** — new broadcast is pinned; previous day's message is unpinned (controlled by `ENABLE_BROADCAST_AUTO_PIN` and `DELETE_PREVIOUS_BROADCAST`)
 - **Deduplication** — `broadcast_logs` with `UNIQUE(channel_id, broadcast_date)` prevents double-broadcast; failed attempts are retried on the next run
@@ -284,7 +285,8 @@ created_at
 
 | Rule | Value |
 |---|---|
-| Sessions per day (per user) | 1 |
+| Sessions per day (per user) | 1 by default — set in the admin panel (`MAX_DAILY_RESERVATIONS`) |
+| Same session time twice | Never — one reservation per user per start time, across all channels. Not configurable |
 | Max active (future) reservations | 10 |
 | Booking window | Next 14 days |
 | Session hours | 4:00 PM – 11:30 PM + optional 11:59 PM terminal slot (Asia/Baghdad) |
@@ -347,10 +349,10 @@ Echoes  •  Wednesday, May 29, 2026
 ━━━━━━━━━━━━━━━━━━━━━
 
 🕓 4:00 PM
-👩‍💼 🇲🇾 Malaysia  │  ID: ABC123  │  ⭐ 20
+👩‍💼 🇲🇾 Malaysia  │  Sara (ABC123)  │  ⭐ 20
 
 🕔 5:00 PM
-👨‍💼 🇮🇶 Iraq  │  ID: XY7890  │  ⭐ 15
+👨‍💼 🇮🇶 Iraq  │  Nima (XY7890)  │  ⭐ 15
 
 ━━━━━━━━━━━━━━━━━━━━━
 
@@ -364,6 +366,8 @@ Echoes  •  Wednesday, May 29, 2026
 ```
 
 The layout is rendered by `app/templates/schedule_message.j2`. Special event blocks (e.g. "Collective Dhikr") are injected from the `schedule_events` table — set `channel_id = NULL` for a block that appears in all channels.
+
+**Participant identity.** Each row shows the name the user chose at registration followed by their public code — `Sara (ABC123)`. The message is posted publicly in the channel, so the name is public too. It is the only user-written text in the message: it is HTML-escaped and truncated to 32 characters for display (`display_name_for` in `schedule_formatter.py`). The stored name is untouched, and the code beside it remains the exact identifier for anything that has to match. A user with no name on record falls back to the bare code.
 
 ---
 
@@ -384,6 +388,7 @@ The layout is rendered by `app/templates/schedule_message.j2`. Special event blo
 | Variable | Default | Description |
 |---|---|---|
 | `MAX_ACTIVE_RESERVATIONS` | `10` | Max future active reservations per user |
+| `MAX_DAILY_RESERVATIONS` | `1` | Max reservations per user on one local calendar day. Counts every reservation that day except cancelled ones |
 | `MAX_RESERVATION_DAYS_AHEAD` | `14` | Booking window in days |
 | `RESERVATION_STRATEGY` | `THRESHOLD_UNLOCK` | How slots are offered and which channel a booking lands on — `THRESHOLD_UNLOCK` or `SEQUENTIAL_FILL` |
 | `CHANNEL_CAPACITY_THRESHOLD` | `0.70` | Daily fill ratio to unlock the next channel. Ignored under `SEQUENTIAL_FILL` |
@@ -491,7 +496,7 @@ make test-cov      # with coverage report
 Test coverage includes:
 
 - `test_slot_generation.py` — 13 tests covering interval generation, 11:59 PM terminal slot append/disable/dedup, chronological order, same-day calendar integrity, `_slots_per_day` count accuracy
-- `test_schedule_formatter.py` — 25 tests covering clock emojis, time formatting, 11:59 PM rendering (time label, clock emoji, no date rollover), all template rendering paths (empty schedule, entries, events, country flags, gender emojis, invite links)
+- `test_schedule_formatter.py` — 51 tests covering clock emojis, time formatting, 11:59 PM rendering (time label, clock emoji, no date rollover), participant name display (HTML escaping, truncation, empty-name fallback), all template rendering paths (empty schedule, entries, events, country flags, gender emojis, invite links)
 - `test_broadcast.py` — 8 tests covering deduplication, per-channel isolation, Telegram failure handling, pin/unpin lifecycle
 
 ---

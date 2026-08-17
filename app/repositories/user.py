@@ -27,6 +27,33 @@ class UserRepository(BaseRepository[User]):
     async def get_by_public_code(self, code: str) -> User | None:
         return await self.first_by(public_user_code=code)
 
+    async def get_by_id_for_update(self, user_id: uuid.UUID) -> User | None:
+        """Read the user row and hold a lock on it until the transaction ends.
+
+        The serialisation point for every per-user booking rule. Those rules are
+        read-then-write — count what the user already has, insert if there is
+        room — and nothing else in the booking path serialises that pair: the
+        Redis advisory lock is keyed on the contended *slot*, and the row locks
+        taken during slot resolution are per-slot too. Two bookings for two
+        different slots therefore never met, and could both read the same count.
+
+        Postgres holds a ``FOR UPDATE`` lock until COMMIT or ROLLBACK, which is
+        the property that matters here — the Redis lock is released in
+        ``_book``'s ``finally``, before the surrounding transaction commits, so
+        it cannot cover the write it is meant to protect.
+
+        Deliberately a plain blocking ``FOR UPDATE``: NOWAIT would reject the
+        second booker outright and SKIP LOCKED would let it slip past the very
+        check it must observe. Waiting is the correct behaviour — the loser
+        should proceed once the winner commits, and then see the updated count.
+
+        Contention is scoped to one user's own concurrent requests, so this
+        never serialises unrelated bookings.
+        """
+        stmt = select(User).where(User.id == user_id).with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
     async def exists_by_telegram_id(self, telegram_id: int) -> bool:
         stmt = select(User.id).where(User.telegram_id == telegram_id).limit(1)
         result = await self.session.execute(stmt)

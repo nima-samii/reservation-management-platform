@@ -15,6 +15,7 @@ from app.cache.client import redis_client
 from app.core.config import settings
 from app.core.exceptions import (
     DailyLimitError,
+    DuplicateSlotTimeError,
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
@@ -148,6 +149,22 @@ async def _show_confirmation(callback: CallbackQuery, state: FSMContext, local_d
         parse_mode="Markdown",
     )
     await state.set_state(ReservationSG.confirm)
+
+
+def _pick_another_keyboard(date_str: str) -> InlineKeyboardMarkup:
+    """Send the user back to the slot list for the date they were already on.
+
+    Used by the refusals that only rule out *this time* — a different slot on
+    the same date would still be accepted, so re-running the date picker would
+    make the user re-answer a question they already answered.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="🔄 Pick Another Slot",
+            callback_data=f"date:{date_str}",
+        ),
+        InlineKeyboardButton(text="❌ Cancel", callback_data="reservation:cancel"),
+    ]])
 
 
 def _slot_ref_from_state(data: dict) -> SlotRef | None:
@@ -289,18 +306,11 @@ async def confirm_reservation(
         fsm_data = await state.get_data()
         date_str = fsm_data.get("selected_date", "")
         if date_str:
-            retry_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="🔄 Pick Another Slot",
-                    callback_data=f"date:{date_str}",
-                ),
-                InlineKeyboardButton(text="❌ Cancel", callback_data="reservation:cancel"),
-            ]])
             await callback.message.edit_text(  # type: ignore[union-attr]
                 "⚡ *Slot No Longer Available*\n\n"
                 "Someone else just booked this time slot.\n"
                 "Please pick a different time.",
-                reply_markup=retry_kb,
+                reply_markup=_pick_another_keyboard(date_str),
                 parse_mode="Markdown",
             )
             await state.set_state(ReservationSG.choose_date)
@@ -313,11 +323,12 @@ async def confirm_reservation(
             )
             await state.clear()
         return
-    except DailyLimitError:
+    except DailyLimitError as e:
+        # The cap is configurable, so the sentence has to come from the
+        # exception rather than be written here — same as MaxReservationsError
+        # below.
         await callback.message.edit_text(  # type: ignore[union-attr]
-            "⚠️ *Daily Limit Reached*\n\n"
-            "You already have a reservation on this day.\n"
-            "Only one reservation per day is allowed.",
+            f"⚠️ *Daily Limit Reached*\n\n{e.message}",
             parse_mode="Markdown",
         )
         await state.clear()
@@ -328,6 +339,20 @@ async def confirm_reservation(
             parse_mode="Markdown",
         )
         await state.clear()
+        return
+    except DuplicateSlotTimeError as e:
+        # Unlike the two caps above, another slot on this same date is still
+        # bookable — so this is offered as a retry rather than a dead end.
+        date_str = data.get("selected_date", "")
+        await callback.message.edit_text(  # type: ignore[union-attr]
+            f"🔁 *Already Booked at This Time*\n\n{e.message}",
+            reply_markup=_pick_another_keyboard(date_str) if date_str else None,
+            parse_mode="Markdown",
+        )
+        if date_str:
+            await state.set_state(ReservationSG.choose_date)
+        else:
+            await state.clear()
         return
     except PastSlotError:
         await callback.message.edit_text(  # type: ignore[union-attr]

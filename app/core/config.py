@@ -155,6 +155,11 @@ class Settings(BaseSettings):
 
     # ── Reservation rules ─────────────────────────────────────────────────
     MAX_ACTIVE_RESERVATIONS: int = 10
+    # Per-user cap on reservations falling on one *local* calendar day.
+    # Defaults to 1 — the rule that used to be hard-coded — so an upgrade that
+    # does not set it is a no-op. Independent of the cap above: whichever is
+    # reached first applies.
+    MAX_DAILY_RESERVATIONS: int = 1
     MAX_RESERVATION_DAYS_AHEAD: int = 14
     # Which strategy decides what slots users are offered and which channel a
     # booking lands on. Defaults to the historical behaviour so an upgrade is a
