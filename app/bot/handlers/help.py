@@ -27,9 +27,9 @@ def build_help_text() -> str:
     formatting this change does not introduce.
     """
     return (
-    "ℹ️ *19-Step English Learning Bot — Help*\n\n"
+    "ℹ️ *19-Steps Toward Inner Peace Bot — Help*\n\n"
     "📅 *Reserve Time*\n"
-    "Book a 30-minute live English session.\n"
+    "Book a 30-minute live Toward Inner Peace session.\n"
     f"• Sessions run 4:00 PM – 12:00 AM ({settings.TIMEZONE})\n"
     f"• Max {settings.MAX_ACTIVE_RESERVATIONS} active reservations at a time\n"
     f"{_daily_limit_line()}\n"

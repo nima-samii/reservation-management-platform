@@ -51,7 +51,7 @@ async def start_unregistered(message: Message, state: FSMContext) -> None:
     )
 
     await message.answer(
-        "👋 Welcome to *19-Step English Learning Bot*!\n\n"
+        "👋 Welcome to *19-Steps Toward Inner Peace Bot*!\n\n"
         f"We detected your Telegram name as:\n*{detected_name}*\n\n"
         "Please confirm or edit it:",
         reply_markup=kb,
