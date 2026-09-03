@@ -104,6 +104,38 @@ class ParticipationScoreService:
             reason=reason,
         )
 
+    async def apply_attendance_score(
+        self,
+        user_id: uuid.UUID,
+        reservation_id: uuid.UUID,
+        delta: int,
+        reason: str,
+        meta: dict | None = None,
+    ) -> ScoreTransaction:
+        """Record the score an admin entered with an attendance decision.
+
+        Not in ``_SCORE_POLICY``: the whole point of the feature is that the
+        admin chooses the number, and that it is unconstrained by the outcome —
+        an attendance may be worth nothing and an absence may still be worth
+        points.
+
+        A delta of 0 is written like any other. It is a decision the user is
+        told about, so it needs its audit row; skipping it would make "attended,
+        no points" the one outcome with no trace.
+
+        Callers must have already won
+        :meth:`ReservationRepository.claim_attendance_decision` — this method
+        has no idempotency of its own.
+        """
+        return await self._record(
+            user_id=user_id,
+            transaction_type=ScoreTransactionType.ATTENDANCE_SCORE,
+            delta=delta,
+            reservation_id=reservation_id,
+            reason=reason,
+            meta=meta,
+        )
+
     async def apply_admin_adjustment(
         self,
         user_id: uuid.UUID,

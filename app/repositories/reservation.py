@@ -135,6 +135,63 @@ class ReservationRepository(BaseRepository[Reservation]):
         result = await self.session.execute(stmt)
         return (result.rowcount or 0) > 0
 
+    async def claim_attendance_decision(
+        self,
+        reservation_id: uuid.UUID,
+        *,
+        attendance_status: str,
+        score_delta: int,
+        reason: str,
+        marked_by: str,
+        marked_at: datetime,
+    ) -> bool:
+        """Atomically record the one attendance decision a reservation may have.
+
+        The same shape as :meth:`transition_active_to_cancelled`, and for the
+        same reason: the decision applies a score, so it must happen at most
+        once no matter how many concurrent requests ask for it. Two admins
+        clicking "Did not attend" on the same row — or one admin's
+        double-tapped button — serialize on the row lock, and only the first
+        observes ``rowcount == 1``. Returns True iff this caller won.
+
+        ``attendance_status IS NULL`` is the guard, so the claim is what makes
+        the decision exist; there is no separate flag to keep in step with it.
+        This is the specific defect it exists to prevent: the legacy no-show
+        endpoint reads ``notes``, checks its flag, applies the penalty and only
+        then writes the flag back, all without a lock — two requests both read
+        an unflagged row and both charge the user.
+
+        Callers **must** claim before touching the score ledger. The legacy
+        path scores first and flags second, so a crash between the two leaves a
+        charge that the next request cannot see and will happily repeat.
+
+        Requiring ``status = 'completed'`` keeps the rule that only a session
+        that actually ran can be judged — an active reservation has not
+        happened yet and a cancelled one never will. Note this means a
+        just-passed reservation is not decidable until the lifecycle job has
+        run (:00/:30); winning the claim is the only reliable signal, and a
+        lost claim does not say which of the two conditions failed. Read the
+        row separately if you need to tell the caller why.
+        """
+        stmt = (
+            update(Reservation)
+            .where(
+                Reservation.id == reservation_id,
+                Reservation.status == ReservationStatus.COMPLETED,
+                Reservation.attendance_status.is_(None),
+            )
+            .values(
+                attendance_status=attendance_status,
+                attendance_score_delta=score_delta,
+                attendance_reason=reason,
+                attendance_marked_by=marked_by,
+                attendance_marked_at=marked_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return (result.rowcount or 0) > 0
+
     async def count_reservations_on_date(
         self, user_id: uuid.UUID, local_date: date
     ) -> int:
