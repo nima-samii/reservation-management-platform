@@ -86,7 +86,7 @@ logs-all: ## Follow ALL service logs
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  DOCKER — ADMIN PANEL (Next.js behind nginx, exposed on port 80)
+#  DOCKER — ADMIN PANEL (Next.js behind nginx, host port = ADMIN_PANEL_PORT, default 80)
 # ══════════════════════════════════════════════════════════════════════════════
 
 admin-up: ## Build and start admin panel + nginx
