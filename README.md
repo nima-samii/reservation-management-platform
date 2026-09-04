@@ -67,12 +67,14 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 
 ### Participation Score
 
-- **+1** awarded on successful booking; **−1** on cancellation
-- Reserve + cancel nets zero — farming is blocked by design
+- **Booking and cancelling do not change the score** — the score records participation, and pressing a button is not participation. Both used to move it (+1 / −1); neither does now
+- **Attendance is an admin decision, and the score is a separate input** — once a reservation is `completed`, an admin records *attended* or *did not attend* **and** the points it is worth, with a required explanation. Every combination is legal: attended +10, attended 0, attended −5, absent +2. The outcome never determines the sign
+- One decision per reservation, ever — enforced by a conditional UPDATE (`status = 'completed' AND attendance_status IS NULL`) that runs *before* the score, so a failure can never leave a charge with no decision. Corrections go through an admin score adjustment, which leaves its own ledger row
+- The user is DMed the outcome, the points and the explanation
 - Immutable `score_transactions` audit ledger — every delta is a permanent row
 - Atomic SQL updates (`participation_score = participation_score + delta`) — no read-modify-write race
 - Score visible in user profile and in daily broadcasts
-- Extensible: no-show penalty and admin manual adjustment already implemented
+- Legacy no-show penalty (a fixed −1, flagged in `reservations.notes`) is retired but its history is preserved and still shown; the two mechanisms are guarded against both scoring one session
 - **Off-platform awards** — the program's own scoring rules (hosting a live broadcast, referrals, joint broadcasts, in-person courses) are activities the bot cannot observe. They reach the ledger as `ADMIN_ADJUSTMENT` rows applied from the admin panel; the help screen documents the rules and says explicitly that an admin awards them
 
 ### Notification & Reminder System
@@ -541,7 +543,8 @@ make gen-secret
 | `GET /api/admin/countries` | JWT | All active countries (for edit dropdowns) |
 | `GET /api/admin/reservations` | JWT | Paginated reservations — date, channel, status, search filters + summary bar |
 | `GET /api/admin/reservations/{id}` | JWT | Full reservation detail |
-| `POST /api/admin/reservations/{id}/no-show` | JWT | Apply no-show penalty (idempotent, score-traced, audit-logged) |
+| `POST /api/admin/reservations/{id}/attendance` | JWT | Record attendance (`attended` / `absent`) with an admin-entered score and required explanation — one decision per reservation, audit-logged, user DMed |
+| `POST /api/admin/reservations/{id}/no-show` | JWT | **Deprecated** — superseded by `/attendance`. Applies the legacy fixed −1 penalty |
 | `GET /api/admin/reservations/export` | JWT | CSV or JSON export, up to 90-day range |
 | `GET /api/admin/channels` | JWT | All channels (for filter dropdowns) |
 | `GET /api/admin/dashboard/stats` | JWT | Live stats — today's reservations, fill rates, week summary, system health (Redis-cached 60s) |

@@ -3,7 +3,7 @@
 Covers the admin-cancellation contract:
   * active reservation is cancelled and its slot released
   * already-cancelled / completed reservations are rejected
-  * the booking's +1 reward is rolled back (-1)
+  * the score is not touched at all
   * a cancellation DM is enqueued exactly once
 """
 import uuid
@@ -63,10 +63,10 @@ async def test_active_reservation_is_cancelled(service):
 
 
 @pytest.mark.asyncio
-async def test_lost_cancel_race_does_not_double_rollback(service):
+async def test_lost_cancel_race_releases_nothing_and_sends_nothing(service):
     """If a concurrent cancel (or the lifecycle-completion job) wins the atomic
-    transition first, this caller gets rowcount 0 and must NOT roll the score
-    back a second time nor enqueue a duplicate DM — the double-deduction bug."""
+    transition first, this caller gets rowcount 0 and must not act on a
+    cancellation it did not perform — no slot release, no duplicate DM."""
     res = _make_reservation()
     service._res_repo.get_reservation_admin_detail = AsyncMock(return_value=res)
     service._res_repo.transition_active_to_cancelled = AsyncMock(return_value=False)
@@ -77,7 +77,6 @@ async def test_lost_cancel_race_does_not_double_rollback(service):
         with pytest.raises(ReservationNotCancellableError):
             await service.admin_cancel_reservation(res.id, actor="admin", reason="x")
 
-    service._score_svc.rollback_cancellation.assert_not_called()
     service._slot_repo.save.assert_not_called()
     enqueue.assert_not_called()
 
@@ -96,20 +95,20 @@ async def test_cancellation_releases_slot(service):
 
 
 @pytest.mark.asyncio
-async def test_booking_reward_is_rolled_back(service):
+async def test_cancellation_does_not_touch_the_score(service):
+    """Cancelling used to deduct 1, rolling back the +1 from booking. Neither
+    exists now: participation is an admin decision on a session that actually
+    ran, and a cancelled session never ran. Asserted against the whole score
+    service, not a named method, so reinstating any of it fails here."""
     res = _make_reservation()
     service._res_repo.get_reservation_admin_detail = AsyncMock(return_value=res)
 
     with patch("app.services.reservation.enqueue_reservation_cancellation_notification"), \
-            patch("app.services.reservation.enqueue_score_notification"):
+            patch("app.services.reservation.enqueue_score_notification") as score_dm:
         await service.admin_cancel_reservation(res.id, actor="admin")
 
-    # The +1 earned at booking is rolled back (-1); no other score side-effects.
-    service._score_svc.rollback_cancellation.assert_awaited_once_with(
-        res.user_id, res.id
-    )
-    service._score_svc.apply_no_show_penalty.assert_not_called()
-    service._score_svc.apply_admin_adjustment.assert_not_called()
+    assert service._score_svc.mock_calls == []
+    score_dm.assert_not_called()
 
 
 @pytest.mark.asyncio

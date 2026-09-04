@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.db.models.reservation import Reservation
+from app.db.models.reservation import AttendanceStatus, Reservation
 from app.db.models.score import NotifyStatus, ScoreTransactionType
 from app.repositories.reservation import ReservationRepository
 from app.repositories.score import ScoreTransactionRepository
@@ -33,6 +33,19 @@ _REASON_FALLBACK: dict[str, str] = {
     ScoreTransactionType.RESERVATION_CANCELLATION.value: "Reservation cancelled",
     ScoreTransactionType.NO_SHOW_PENALTY.value: "No-show penalty",
     ScoreTransactionType.ADMIN_ADJUSTMENT.value: "Score adjusted by an admin",
+    # Defensive only — record_attendance requires a non-blank reason, so an
+    # attendance row should never reach this table.
+    ScoreTransactionType.ATTENDANCE_SCORE.value: "Attendance recorded by an admin",
+}
+
+# The outcome line for an attendance decision. Deliberately says nothing about
+# points: the score is a separate, admin-entered number, so an absence is not
+# necessarily a penalty and an attendance is not necessarily a reward.
+_ATTENDANCE_LINE: dict[str, str] = {
+    AttendanceStatus.ATTENDED.value: "✅ You attended this session.",
+    AttendanceStatus.ABSENT.value: (
+        "❌ You were marked as not having attended this session."
+    ),
 }
 
 
@@ -83,12 +96,24 @@ class ScoreNotificationService:
                 tx.reservation_id
             )
 
+        # For an attendance decision the outcome is half the message and cannot
+        # be inferred from the delta — an absence may still carry points. The
+        # reservation column is authoritative; the ledger row's `meta` mirror is
+        # the fallback, because score_transactions.reservation_id is
+        # ON DELETE SET NULL and the row can outlive the reservation.
+        attendance_status: str | None = None
+        if tx.transaction_type == ScoreTransactionType.ATTENDANCE_SCORE.value:
+            attendance_status = getattr(reservation, "attendance_status", None) or (
+                tx.meta or {}
+            ).get("attendance_status")
+
         text = self._format(
             tx.transaction_type,
             tx.score_delta,
             tx.reason,
             user.participation_score,
             reservation,
+            attendance_status,
         )
 
         try:
@@ -131,12 +156,17 @@ class ScoreNotificationService:
         reason: str | None,
         new_score: int,
         reservation: Reservation | None = None,
+        attendance_status: str | None = None,
     ) -> str:
         """Sign-aware, HTML-safe score-change message.
 
         When ``reservation`` is provided (the transaction is tied to a slot, e.g.
-        a no-show penalty) its date/time/channel are appended so the user knows
-        exactly which reservation the change refers to.
+        an attendance decision) its date/time/channel are appended so the user
+        knows exactly which reservation the change refers to.
+
+        ``attendance_status`` turns this into an attendance message: the outcome
+        is stated on its own line above the score, because the two are
+        independent and the outcome is the half the number cannot express.
         """
         clean_reason = (reason or "").strip() or _REASON_FALLBACK.get(
             transaction_type, "Score updated"
@@ -145,14 +175,21 @@ class ScoreNotificationService:
 
         if delta > 0:
             headline = f"🎉 You received <b>+{delta}</b> point(s)!"
-        else:
+        elif delta < 0:
             headline = f"⚠️ You lost <b>{abs(delta)}</b> point(s)."
+        else:
+            # Zero is a real decision an admin can record — "you attended, it
+            # was worth nothing" — not a no-op. With only the two sign branches
+            # above it rendered as "You lost 0 point(s)".
+            headline = "ℹ️ Your score is unchanged (<b>0</b> points)."
 
-        text = (
-            f"<b>Score Update</b>\n\n"
-            f"{headline}\n"
-            f"Reason: {clean_reason}\n"
-        )
+        is_attendance = transaction_type == ScoreTransactionType.ATTENDANCE_SCORE.value
+        outcome_line = _ATTENDANCE_LINE.get(attendance_status or "")
+
+        text = f"<b>{'Session Attendance' if is_attendance else 'Score Update'}</b>\n\n"
+        if outcome_line:
+            text += f"{outcome_line}\n"
+        text += f"{headline}\nReason: {clean_reason}\n"
 
         if reservation is not None and reservation.slot is not None:
             slot_local = reservation.slot.slot_datetime.astimezone(TZ)

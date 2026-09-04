@@ -22,6 +22,7 @@ import pytest
 from app.core.exceptions import (
     AttendanceAlreadyRecordedError,
     AttendanceNotDecidableError,
+    LegacyNoShowRecordedError,
     NotFoundError,
     ValidationError,
 )
@@ -34,12 +35,14 @@ def _make_reservation(
     status=ReservationStatus.COMPLETED,
     attendance_status=None,
     score=7,
+    notes=None,
 ):
     """Build a reservation and make it the one the mocked repo hands back."""
     res = SimpleNamespace(
         id=uuid.uuid4(),
         user_id=uuid.uuid4(),
         status=status,
+        notes=notes,
         user=SimpleNamespace(participation_score=score),
         attendance_status=attendance_status,
         attendance_score_delta=None,
@@ -194,6 +197,48 @@ async def test_a_decided_reservation_is_refused_not_edited(service):
     service._res_repo.claim_attendance_decision.assert_not_called()
     service._score_svc.apply_attendance_score.assert_not_called()
     enqueue.assert_not_called()
+
+
+# ── The legacy no-show penalty scored the same session ────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_legacy_no_show_penalty_blocks_a_decision(service):
+    """Both mechanisms score one session, so allowing both charges the user
+    twice for a single absence. The legacy flag is a JSON substring in `notes`
+    and always means -1, so there is nothing to merge it into."""
+    res = _make_reservation(
+        service, notes='{"no_show_penalty_applied": true}'
+    )
+
+    with patch("app.services.reservation.enqueue_score_notification") as enqueue:
+        with pytest.raises(LegacyNoShowRecordedError):
+            await service.record_attendance(
+                res.id,
+                attendance_status=AttendanceStatus.ABSENT,
+                score_delta=-5,
+                reason="Did not show up",
+                actor="admin",
+            )
+
+    service._res_repo.claim_attendance_decision.assert_not_called()
+    service._score_svc.apply_attendance_score.assert_not_called()
+    enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [None, "", "not json at all", "{}", '{"no_show_penalty_applied": false}'],
+)
+@pytest.mark.asyncio
+async def test_notes_without_the_legacy_flag_do_not_block(service, notes):
+    """`notes` is a free-text column that happens to carry JSON sometimes, so
+    unparseable content must read as "no penalty", not as an error."""
+    res = _make_reservation(service, notes=notes)
+
+    outcome, _ = await _record(service, res)
+
+    assert outcome.score_delta == 10
+    service._res_repo.claim_attendance_decision.assert_awaited_once()
 
 
 # ── Only a session that actually ran can be judged ────────────────────────────

@@ -165,6 +165,28 @@ class AttendanceAlreadyRecordedError(ReservationError):
         )
 
 
+class LegacyNoShowRecordedError(ReservationError):
+    """Raised when the reservation already carries the legacy no-show penalty.
+
+    The two mechanisms score the same session, so allowing both would charge
+    the user twice for one absence. They cannot be merged either: the legacy
+    flag lives in ``notes["no_show_penalty_applied"]``, always means -1, and is
+    still read by the dashboard, the summaries and broadcast segmentation.
+
+    Distinct from :class:`AttendanceAlreadyRecordedError` because the remedy is
+    different — there is no attendance decision to point at, only an older
+    penalty, and an admin who wants a different number applies a score
+    adjustment on the user.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "A no-show penalty was already applied to this reservation under "
+            "the previous system, so an attendance decision would score the "
+            "same session twice."
+        )
+
+
 class NoChannelAvailableError(ReservationError):
     def __init__(self) -> None:
         super().__init__("No channels are currently available for reservations.")

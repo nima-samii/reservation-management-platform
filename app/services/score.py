@@ -18,9 +18,15 @@ logger = get_logger(__name__)
 
 # Canonical delta for each transaction type.
 # Add new types here — no logic changes needed elsewhere.
+#
+# RESERVATION_REWARD (+1) and RESERVATION_CANCELLATION (-1) are gone: booking
+# and cancelling no longer move the score, so there is no policy left to state.
+# Their enum members remain, because ledger rows written under the old rules
+# still exist and still have to render in the score history.
+#
+# ATTENDANCE_SCORE is absent by design, not omission — the admin supplies the
+# number, and that is the point of the feature.
 _SCORE_POLICY: dict[ScoreTransactionType, int] = {
-    ScoreTransactionType.RESERVATION_REWARD: +1,
-    ScoreTransactionType.RESERVATION_CANCELLATION: -1,
     ScoreTransactionType.NO_SHOW_PENALTY: -1,
     # ADMIN_ADJUSTMENT uses a caller-supplied delta — not in this table
 }
@@ -60,33 +66,10 @@ class ParticipationScoreService:
         )
         return tx
 
-    async def award_reservation_reward(
-        self,
-        user_id: uuid.UUID,
-        reservation_id: uuid.UUID,
-    ) -> ScoreTransaction:
-        """Grant +1 when a reservation is successfully created."""
-        delta = _SCORE_POLICY[ScoreTransactionType.RESERVATION_REWARD]
-        return await self._record(
-            user_id=user_id,
-            transaction_type=ScoreTransactionType.RESERVATION_REWARD,
-            delta=delta,
-            reservation_id=reservation_id,
-        )
-
-    async def rollback_cancellation(
-        self,
-        user_id: uuid.UUID,
-        reservation_id: uuid.UUID,
-    ) -> ScoreTransaction:
-        """Deduct -1 when a reservation is cancelled (anti-abuse rollback)."""
-        delta = _SCORE_POLICY[ScoreTransactionType.RESERVATION_CANCELLATION]
-        return await self._record(
-            user_id=user_id,
-            transaction_type=ScoreTransactionType.RESERVATION_CANCELLATION,
-            delta=delta,
-            reservation_id=reservation_id,
-        )
+    # award_reservation_reward / rollback_cancellation were deleted rather than
+    # left unused. Booking a session and cancelling one no longer change the
+    # score, and a method that still implements the old rule is an invitation
+    # to call it back into existence from a new flow.
 
     async def apply_no_show_penalty(
         self,
