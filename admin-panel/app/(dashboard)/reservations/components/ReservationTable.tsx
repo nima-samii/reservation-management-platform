@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReservationItem } from "@/lib/api/reservations";
-import { NoShowButton } from "./NoShowButton";
+import { AttendanceControl } from "./AttendanceControl";
 import { CancelButton } from "./CancelButton";
 
 interface Props {
@@ -49,7 +49,7 @@ export function ReservationTable({ items, isLoading, queryKey }: Props) {
             <th className="px-3 py-2 whitespace-nowrap">Gender</th>
             <th className="px-3 py-2 whitespace-nowrap">Score</th>
             <th className="px-3 py-2 whitespace-nowrap">Status</th>
-            <th className="px-3 py-2 whitespace-nowrap">No-show</th>
+            <th className="px-3 py-2 whitespace-nowrap">Attendance</th>
             <th className="px-3 py-2 whitespace-nowrap"></th>
           </tr>
         </thead>
@@ -110,7 +110,7 @@ export function ReservationTable({ items, isLoading, queryKey }: Props) {
                       </span>
                     </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
-                      <NoShowButton reservation={item} queryKey={queryKey} />
+                      <AttendanceControl reservation={item} queryKey={queryKey} />
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2">

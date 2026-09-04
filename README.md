@@ -75,6 +75,7 @@ Built with **Python 3.12**, **Aiogram 3**, **FastAPI**, **PostgreSQL**, **SQLAlc
 - Atomic SQL updates (`participation_score = participation_score + delta`) — no read-modify-write race
 - Score visible in user profile and in daily broadcasts
 - Legacy no-show penalty (a fixed −1, flagged in `reservations.notes`) is retired but its history is preserved and still shown; the two mechanisms are guarded against both scoring one session
+- Every counter that reports absences — day summary, dashboard tiles, activity chart, broadcast segmentation — reads a single shared definition (`was_absent`) that covers **both** an `absent` decision and the retired flag. Reading only one would either flatline at zero as new decisions come in, or erase the historical penalties
 - **Off-platform awards** — the program's own scoring rules (hosting a live broadcast, referrals, joint broadcasts, in-person courses) are activities the bot cannot observe. They reach the ledger as `ADMIN_ADJUSTMENT` rows applied from the admin panel; the help screen documents the rules and says explicitly that an admin awards them
 
 ### Notification & Reminder System
@@ -260,7 +261,7 @@ is_active                      error_message
 admin_audit_logs
 ──────────────────────────────
 id (PK)
-action                         — e.g. "user_patched", "score_adjusted", "no_show_applied"
+action                         — e.g. "user_patched", "score_adjusted", "attendance_recorded"
 admin_username
 entity_type                    — "user" | "reservation" | ...
 entity_id
@@ -541,11 +542,11 @@ make gen-secret
 | `GET /api/admin/users/{id}/score-history` | JWT | Paginated score transaction history |
 | `POST /api/admin/users/{id}/send-message` | JWT | Send Telegram message to user via bot |
 | `GET /api/admin/countries` | JWT | All active countries (for edit dropdowns) |
-| `GET /api/admin/reservations` | JWT | Paginated reservations — date, channel, status, search filters + summary bar |
-| `GET /api/admin/reservations/{id}` | JWT | Full reservation detail |
+| `GET /api/admin/reservations` | JWT | Paginated reservations — date, channel, status, `attendance` (`pending`/`decided`/`attended`/`absent`) and search filters, plus a summary bar that includes the to-decide queue |
+| `GET /api/admin/reservations/{id}` | JWT | Full reservation detail, including the recorded attendance decision |
 | `POST /api/admin/reservations/{id}/attendance` | JWT | Record attendance (`attended` / `absent`) with an admin-entered score and required explanation — one decision per reservation, audit-logged, user DMed |
 | `POST /api/admin/reservations/{id}/no-show` | JWT | **Deprecated** — superseded by `/attendance`. Applies the legacy fixed −1 penalty |
-| `GET /api/admin/reservations/export` | JWT | CSV or JSON export, up to 90-day range |
+| `GET /api/admin/reservations/export` | JWT | CSV or JSON export, up to 90-day range; same `attendance` filter, and the decision's five columns are appended to the CSV |
 | `GET /api/admin/channels` | JWT | All channels (for filter dropdowns) |
 | `GET /api/admin/dashboard/stats` | JWT | Live stats — today's reservations, fill rates, week summary, system health (Redis-cached 60s) |
 | `GET /api/admin/dashboard/activity` | JWT | Daily reservation counts for last N days (1–30), used for activity chart |
@@ -568,7 +569,7 @@ make gen-secret
 |---|---|---|
 | 1 — Auth & scaffold | ✅ Done | JWT auth, login page, protected routes, Docker wiring |
 | 2 — User management | ✅ Done | List/search/ban users, inline edit, score adjustment, send Telegram message |
-| 3 — Reservations & no-show | ✅ Done | Reservation list with filters, no-show penalty, CSV/JSON export |
+| 3 — Reservations & attendance | ✅ Done | Reservation list with filters (including the attendance queue), attended / did-not-attend actions with a manual score and required explanation, CSV/JSON export |
 | 4 — Dashboard, Settings, Broadcast, Jobs | ✅ Done | Live stats, editable settings, manual/daily broadcast, job triggers, schedule events CRUD |
 
 See [`adminpanel.md`](adminpanel.md) for the full API reference and phase tracker.

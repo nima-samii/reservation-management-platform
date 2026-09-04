@@ -49,7 +49,11 @@ from app.core.logging import get_logger
 from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.session import get_db_session
 from app.repositories.admin_audit_log import AdminAuditLogRepository
-from app.repositories.reservation import ReservationRepository, _parse_notes
+from app.repositories.reservation import (
+    ATTENDANCE_FILTERS,
+    ReservationRepository,
+    _parse_notes,
+)
 from app.repositories.slot import SlotRepository
 from app.schedulers.jobs.score_notification import enqueue_score_notification
 from app.services.reservation import ReservationService
@@ -62,10 +66,24 @@ logger = get_logger(__name__)
 TZ = pytz.timezone(settings.TIMEZONE)
 
 _VALID_STATUS = {s.value for s in ReservationStatus}
+_VALID_ATTENDANCE = set(ATTENDANCE_FILTERS)
 
 
 def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reservation not found")
+
+
+def _check_attendance_filter(value: Optional[str]) -> None:
+    """Reject an unknown attendance filter instead of ignoring it.
+
+    Silently dropping it would return an unfiltered page that looks like a
+    filtered one — the worst outcome for a queue view an admin works through.
+    """
+    if value and value not in _VALID_ATTENDANCE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid attendance filter. Valid: {sorted(_VALID_ATTENDANCE)}",
+        )
 
 
 def _to_item(res: Reservation) -> ReservationItem:
@@ -99,6 +117,11 @@ def _to_item(res: Reservation) -> ReservationItem:
             participation_score=user.participation_score,
         ),
         no_show_applied=_parse_notes(res.notes).get("no_show_penalty_applied") is True,
+        attendance_status=res.attendance_status,
+        attendance_score_delta=res.attendance_score_delta,
+        attendance_reason=res.attendance_reason,
+        attendance_marked_by=res.attendance_marked_by,
+        attendance_marked_at=res.attendance_marked_at,
     )
 
 
@@ -114,6 +137,7 @@ async def export_reservations(
     date_to: date = Query(...),
     channel_id: Optional[uuid.UUID] = Query(None),
     status_filter: Optional[str] = Query(None, alias="status"),
+    attendance: Optional[str] = Query(None),
     format: str = Query("csv"),
     session: AsyncSession = Depends(get_db_session),
     _admin: str = Depends(get_current_admin),
@@ -128,6 +152,7 @@ async def export_reservations(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid status. Valid: {sorted(_VALID_STATUS)}",
         )
+    _check_attendance_filter(attendance)
 
     repo = ReservationRepository(session)
     rows = await repo.admin_export(
@@ -135,6 +160,7 @@ async def export_reservations(
         date_to=date_to,
         channel_id=channel_id,
         status=status_filter,
+        attendance=attendance,
     )
 
     items = [_to_item(r) for r in rows]
@@ -166,7 +192,14 @@ async def export_reservations(
         "gender",
         "score_at_export",
         "status",
+        # Appended, not inserted: existing consumers read this file by column
+        # position as often as by header.
         "no_show_applied",
+        "attendance_status",
+        "attendance_score",
+        "attendance_reason",
+        "attendance_marked_by",
+        "attendance_marked_at",
     ])
     for item in items:
         country_str = ""
@@ -185,6 +218,16 @@ async def export_reservations(
             item.user.participation_score,
             item.status,
             str(item.no_show_applied).lower(),
+            item.attendance_status or "",
+            # Written out explicitly rather than with `or ""`, which would turn
+            # a real decision of 0 points into a blank cell — the one value
+            # this feature exists to make expressible.
+            "" if item.attendance_score_delta is None else item.attendance_score_delta,
+            item.attendance_reason or "",
+            item.attendance_marked_by or "",
+            item.attendance_marked_at.astimezone(TZ).isoformat()
+            if item.attendance_marked_at
+            else "",
         ])
 
     output.seek(0)
@@ -238,17 +281,26 @@ async def list_reservations(
     date_to: Optional[date] = Query(None),
     channel_id: Optional[uuid.UUID] = Query(None),
     status_filter: Optional[str] = Query(None, alias="status"),
+    attendance: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
     _admin: str = Depends(get_current_admin),
 ) -> PaginatedReservations:
+    """One page of reservations, plus the counts the filter bar shows.
+
+    `attendance` narrows the page to a stage of the attendance decision:
+    `pending` (the queue — completed and unjudged), `decided`, `attended` or
+    `absent`. The summary counts ignore it on purpose; they are the totals the
+    filters are pressed against.
+    """
     if status_filter and status_filter not in _VALID_STATUS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid status. Valid: {sorted(_VALID_STATUS)}",
         )
+    _check_attendance_filter(attendance)
 
     # Default to today when no date args supplied
     date_single = date_param
@@ -264,6 +316,7 @@ async def list_reservations(
         channel_id=channel_id,
         status=status_filter,
         search=search,
+        attendance=attendance,
         page=page,
         page_size=page_size,
     )
@@ -496,6 +549,8 @@ async def record_attendance(
         reason=outcome.reason,
         new_score=outcome.new_score,
         transaction_id=outcome.transaction_id,
+        marked_by=outcome.reservation.attendance_marked_by,
+        marked_at=outcome.reservation.attendance_marked_at,
     )
 
 

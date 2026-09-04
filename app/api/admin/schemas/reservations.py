@@ -82,7 +82,23 @@ class ReservationItem(BaseModel):
     slot: SlotInfo
     channel: ChannelInfo
     user: UserInfo
+
+    # True only for the retired no-show penalty, never for an attendance
+    # decision. The two are told apart deliberately: this one always meant -1
+    # and cannot be re-decided, so the panel has to render it as history rather
+    # than as an outcome an admin chose.
     no_show_applied: bool
+
+    # ── The attendance decision, null until an admin records one ───────────
+    # Flat fields rather than a nested object: all five are written together
+    # and read together, the CSV export needs them as columns anyway, and
+    # "no decision yet" is then five nulls instead of an absent object every
+    # caller has to guard.
+    attendance_status: Optional[str] = None
+    attendance_score_delta: Optional[int] = None
+    attendance_reason: Optional[str] = None
+    attendance_marked_by: Optional[str] = None
+    attendance_marked_at: Optional[datetime] = None
 
 
 class ReservationDetail(ReservationItem):
@@ -110,14 +126,32 @@ class AttendanceResponse(BaseModel):
     reason: str
     new_score: int
     transaction_id: uuid.UUID
+    # Included so a caller can render the recorded row without re-fetching or
+    # inventing a local timestamp — these are the values that were written, not
+    # an approximation of them.
+    marked_by: str
+    marked_at: datetime
 
 
 class DaySummary(BaseModel):
+    """Counts for the filter bar, over the current date/channel/search window.
+
+    ``no_show`` keeps its name but has widened to "recorded as absent by either
+    system" — the legacy penalty flag or an `absent` attendance decision.
+    Renaming it would have broken every existing caller; leaving it reading
+    only the legacy flag would have frozen it at zero the moment automatic
+    scoring was removed.
+    """
+
     total: int
     active: int
     completed: int
     cancelled: int
     no_show: int
+    attended: int = 0
+    # Completed, no decision recorded, not already scored by the legacy
+    # penalty — the number of sessions still waiting on an admin.
+    awaiting_decision: int = 0
 
 
 class PaginatedReservations(BaseModel):

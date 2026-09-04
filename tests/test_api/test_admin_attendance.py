@@ -10,6 +10,7 @@ same bounds, but the schema is what turns a bad body into a 422 instead of a
 500, and it is the only layer the admin panel's form can see.
 """
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -34,11 +35,17 @@ from app.services.reservation import ATTENDANCE_REASON_MAX, ATTENDANCE_SCORE_LIM
 RESERVATION_ID = uuid.uuid4()
 USER_ID = uuid.uuid4()
 TX_ID = uuid.uuid4()
+MARKED_AT = datetime(2026, 6, 21, 9, 30, tzinfo=timezone.utc)
 
 
 def _outcome(attendance_status=AttendanceStatus.ATTENDED.value, delta=10, score=42):
     return SimpleNamespace(
-        reservation=SimpleNamespace(id=RESERVATION_ID, user_id=USER_ID),
+        reservation=SimpleNamespace(
+            id=RESERVATION_ID,
+            user_id=USER_ID,
+            attendance_marked_by="admin",
+            attendance_marked_at=MARKED_AT,
+        ),
         transaction_id=TX_ID,
         attendance_status=attendance_status,
         score_delta=delta,
@@ -110,6 +117,10 @@ async def test_records_the_decision_and_echoes_it_back(client, monkeypatch):
         "reason": "Hosted the session",
         "new_score": 42,
         "transaction_id": str(TX_ID),
+        # Echoed so the panel can render the recorded row without re-fetching
+        # and without inventing a client-side timestamp.
+        "marked_by": "admin",
+        "marked_at": "2026-06-21T09:30:00Z",
     }
     kwargs = svc.record_attendance.await_args.kwargs
     assert kwargs["attendance_status"] is AttendanceStatus.ATTENDED
