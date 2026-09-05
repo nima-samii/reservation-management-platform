@@ -15,7 +15,7 @@ from typing import Optional
 
 import pytz
 from pydantic import BaseModel, field_validator, model_validator
-from sqlalchemy import ColumnElement, and_, exists, func, or_, select
+from sqlalchemy import ColumnElement, and_, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -24,12 +24,12 @@ from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 from app.db.models.user_broadcast import UserBroadcastAudience
 
+# What counts as a missed session is defined once, next to the notes parsing it
+# depends on, and shared with the counters and filters that report it.
+from app.repositories.reservation import absent_sql, not_absent_sql
+
 _VALID_STATUSES = {s.value for s in ReservationStatus}
 _VALID_GENDERS = {"male", "female", "not_say"}
-# No-show is stored as a JSON flag inside reservations.notes (a String column):
-# json.dumps({... "no_show_penalty_applied": True}) -> '... "no_show_penalty_applied": true ...'
-# The flag is only ever written as `true`, so a substring match is reliable.
-_NO_SHOW_PATTERN = '%"no_show_penalty_applied": true%'
 _TZ = pytz.timezone(settings.TIMEZONE)
 
 
@@ -120,14 +120,21 @@ def _has_username_condition() -> ColumnElement[bool]:
 
 
 def _no_show_predicate(matches: bool) -> ColumnElement[bool]:
-    cond = Reservation.notes.like(_NO_SHOW_PATTERN)
-    if matches:
-        return cond
-    # NULL-safe negation: `notes` is NULL for the common case of "no notes at
-    # all", and a reservation with no notes is clearly "not a no-show" — but
-    # plain `~cond` evaluates to SQL NULL (not TRUE) when notes IS NULL, which
-    # would silently drop that row from the correlated EXISTS below.
-    return or_(Reservation.notes.is_(None), ~cond)
+    """Missed-session predicate, under both scoring systems.
+
+    Delegates so this filter cannot drift from the dashboard and summary
+    counters: an absence is now either the legacy `notes` penalty flag or an
+    `absent` attendance decision. Both negations are NULL-safe — `notes` is
+    NULL for most rows and `attendance_status` is NULL until a decision is
+    made, and a plain `NOT` over either evaluates to SQL NULL rather than TRUE,
+    which would silently drop exactly the rows that most clearly never missed a
+    session from the correlated EXISTS below.
+
+    Note the widened meaning: `has_no_show=True` now also matches an absence an
+    admin recorded with a *positive* score, because the segment is about who
+    missed a session, not about who was penalised for it.
+    """
+    return absent_sql() if matches else not_absent_sql()
 
 
 def _reservation_date_bounds(

@@ -15,7 +15,7 @@ services:
     depends_on:
       - admin-panel
     ports:
-      - "80:80"
+      - "${ADMIN_PANEL_PORT:-80}:80"
     volumes:
       - ./nginx/admin-panel.conf:/etc/nginx/conf.d/default.conf:ro
     networks:

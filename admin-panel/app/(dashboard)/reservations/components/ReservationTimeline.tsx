@@ -11,7 +11,11 @@ interface Props {
 const EVENT_STYLE: Record<string, { dot: string; icon: string }> = {
   reservation_created: { dot: "bg-indigo-500", icon: "📅" },
   score_awarded: { dot: "bg-green-500", icon: "⭐" },
+  // A deduction or a zero-delta review. Not styled as a loss — an adjustment
+  // is a correction, not a verdict on the user.
+  score_adjusted: { dot: "bg-gray-500", icon: "✎" },
   notification_sent: { dot: "bg-sky-500", icon: "✉️" },
+  attendance_recorded: { dot: "bg-purple-500", icon: "🗒️" },
   no_show_applied: { dot: "bg-amber-500", icon: "⚠️" },
   reservation_cancelled: { dot: "bg-red-500", icon: "🚫" },
 };
@@ -50,6 +54,16 @@ function EventMeta({ event }: { event: TimelineEvent }) {
     if (admin) lines.push({ label: "By", value: admin });
     const penalty = metaString(m.penalty);
     if (penalty) lines.push({ label: "Penalty", value: penalty });
+  } else if (event.type === "attendance_recorded") {
+    const admin = metaString(m.admin);
+    if (admin) lines.push({ label: "By", value: admin });
+    // The explanation is the point of the event — it is what the user was
+    // sent, and the only record of why this score and not another.
+    const reason = metaString(m.reason);
+    if (reason) lines.push({ label: "Explanation", value: reason });
+  } else if (event.type === "score_adjusted") {
+    const reason = metaString(m.reason);
+    if (reason) lines.push({ label: "Reason", value: reason });
   } else if (event.type === "notification_sent") {
     const status = metaString(m.status);
     if (status && status !== "sent") lines.push({ label: "Status", value: status });

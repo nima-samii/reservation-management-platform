@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.db.models.reservation import Reservation, ReservationStatus
+from app.db.models.reservation import AttendanceStatus, Reservation, ReservationStatus
 from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 from app.repositories.base import BaseRepository
@@ -30,6 +30,78 @@ def _parse_notes(notes: str | None) -> dict:
     except (json.JSONDecodeError, TypeError, ValueError):
         # Plain text from bot — wrap so it isn't lost on merge
         return {"original_notes": notes}
+
+
+# ── "Was this session missed?" — one definition, two dialects ─────────────────
+#
+# Two mechanisms can say a session was not attended, and both are authoritative
+# for the rows they wrote: `attendance_status = 'absent'` (current) and the
+# `notes["no_show_penalty_applied"]` flag left by the retired no-show endpoint.
+# Every counter, filter and export that reports absences goes through the
+# helpers below, because counting only one of the two is wrong in one direction
+# or the other — read only the flag and the number flatlines at zero as new
+# decisions come in; read only the column and every historical absence
+# disappears from the record.
+#
+# The flag lives inside `notes`, a plain String column, written by exactly one
+# line: json.dumps({..., "no_show_penalty_applied": True}), which always
+# renders as '"no_show_penalty_applied": true'. A substring match is therefore
+# reliable, and it is the only way to reach the flag from SQL — the column is
+# not JSONB, so there is nothing to index or extract.
+_LEGACY_NO_SHOW_PATTERN = '%"no_show_penalty_applied": true%'
+
+
+def was_absent(attendance_status: str | None, notes: str | None) -> bool:
+    """True when a reservation is on record as not attended, under either system.
+
+    Takes the two values rather than a row so the call site has to name them:
+    the dashboard queries select an explicit column list, and a column someone
+    forgot to add should fail loudly there instead of silently reading as
+    "attended" inside a shared helper.
+    """
+    if attendance_status == AttendanceStatus.ABSENT.value:
+        return True
+    return _parse_notes(notes).get("no_show_penalty_applied") is True
+
+
+def legacy_no_show_sql():
+    """SQL form of the legacy flag alone — true only where the flag is set."""
+    return Reservation.notes.like(_LEGACY_NO_SHOW_PATTERN)
+
+
+def not_legacy_no_show_sql():
+    """NULL-safe negation of the above.
+
+    `notes` is NULL for the great majority of rows, and `NOT (NULL LIKE ...)`
+    is NULL rather than TRUE — which silently drops exactly the rows that most
+    obviously never had a penalty.
+    """
+    return sa.or_(Reservation.notes.is_(None), sa.not_(legacy_no_show_sql()))
+
+
+def absent_sql():
+    """SQL form of :func:`was_absent`."""
+    return sa.or_(
+        Reservation.attendance_status == AttendanceStatus.ABSENT.value,
+        legacy_no_show_sql(),
+    )
+
+
+def not_absent_sql():
+    """NULL-safe negation of :func:`absent_sql` — attended, or not yet decided."""
+    return sa.and_(
+        sa.or_(
+            Reservation.attendance_status.is_(None),
+            Reservation.attendance_status != AttendanceStatus.ABSENT.value,
+        ),
+        not_legacy_no_show_sql(),
+    )
+
+
+# Attendance filters the admin list accepts. Exported so the API can reject an
+# unknown value with a 422 that names the valid ones, rather than silently
+# returning an unfiltered page.
+ATTENDANCE_FILTERS = ("pending", "decided", "attended", "absent")
 
 
 class ReservationRepository(BaseRepository[Reservation]):
@@ -130,6 +202,63 @@ class ReservationRepository(BaseRepository[Reservation]):
                 Reservation.status == ReservationStatus.ACTIVE,
             )
             .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return (result.rowcount or 0) > 0
+
+    async def claim_attendance_decision(
+        self,
+        reservation_id: uuid.UUID,
+        *,
+        attendance_status: str,
+        score_delta: int,
+        reason: str,
+        marked_by: str,
+        marked_at: datetime,
+    ) -> bool:
+        """Atomically record the one attendance decision a reservation may have.
+
+        The same shape as :meth:`transition_active_to_cancelled`, and for the
+        same reason: the decision applies a score, so it must happen at most
+        once no matter how many concurrent requests ask for it. Two admins
+        clicking "Did not attend" on the same row — or one admin's
+        double-tapped button — serialize on the row lock, and only the first
+        observes ``rowcount == 1``. Returns True iff this caller won.
+
+        ``attendance_status IS NULL`` is the guard, so the claim is what makes
+        the decision exist; there is no separate flag to keep in step with it.
+        This is the specific defect it exists to prevent: the legacy no-show
+        endpoint reads ``notes``, checks its flag, applies the penalty and only
+        then writes the flag back, all without a lock — two requests both read
+        an unflagged row and both charge the user.
+
+        Callers **must** claim before touching the score ledger. The legacy
+        path scores first and flags second, so a crash between the two leaves a
+        charge that the next request cannot see and will happily repeat.
+
+        Requiring ``status = 'completed'`` keeps the rule that only a session
+        that actually ran can be judged — an active reservation has not
+        happened yet and a cancelled one never will. Note this means a
+        just-passed reservation is not decidable until the lifecycle job has
+        run (:00/:30); winning the claim is the only reliable signal, and a
+        lost claim does not say which of the two conditions failed. Read the
+        row separately if you need to tell the caller why.
+        """
+        stmt = (
+            update(Reservation)
+            .where(
+                Reservation.id == reservation_id,
+                Reservation.status == ReservationStatus.COMPLETED,
+                Reservation.attendance_status.is_(None),
+            )
+            .values(
+                attendance_status=attendance_status,
+                attendance_score_delta=score_delta,
+                attendance_reason=reason,
+                attendance_marked_by=marked_by,
+                attendance_marked_at=marked_at,
+            )
             .execution_options(synchronize_session=False)
         )
         result = await self.session.execute(stmt)
@@ -306,6 +435,7 @@ class ReservationRepository(BaseRepository[Reservation]):
         channel_id: uuid.UUID | None,
         status: str | None,
         search: str | None,
+        attendance: str | None = None,
     ) -> list:
         filters: list = []
 
@@ -328,6 +458,28 @@ class ReservationRepository(BaseRepository[Reservation]):
         if status is not None:
             filters.append(Reservation.status == status)
 
+        if attendance == "pending":
+            # The queue: sessions that ran and still have no decision. The
+            # completed condition is part of the meaning, not a convenience —
+            # nothing else is decidable — so `attendance=pending&status=active`
+            # returning nothing is the right answer, not a bug. The legacy flag
+            # is excluded because those rows are already scored and the
+            # attendance endpoint refuses them; listing them as pending work
+            # would hand the admin a row no button can action.
+            filters.append(Reservation.status == ReservationStatus.COMPLETED)
+            filters.append(Reservation.attendance_status.is_(None))
+            filters.append(not_legacy_no_show_sql())
+        elif attendance == "decided":
+            filters.append(Reservation.attendance_status.is_not(None))
+        elif attendance == "attended":
+            filters.append(
+                Reservation.attendance_status == AttendanceStatus.ATTENDED.value
+            )
+        elif attendance == "absent":
+            # Includes the legacy penalty: an admin looking for missed sessions
+            # wants the historical ones too.
+            filters.append(absent_sql())
+
         if search and search.strip():
             pattern = f"%{search.strip()}%"
             filters.append(
@@ -348,11 +500,12 @@ class ReservationRepository(BaseRepository[Reservation]):
         channel_id: uuid.UUID | None = None,
         status: str | None = None,
         search: str | None = None,
+        attendance: str | None = None,
         page: int = 1,
         page_size: int = 100,
     ) -> tuple[list[Reservation], int]:
         filters = self._build_admin_filters(
-            date_single, date_from, date_to, channel_id, status, search
+            date_single, date_from, date_to, channel_id, status, search, attendance
         )
 
         count_stmt = (
@@ -393,13 +546,23 @@ class ReservationRepository(BaseRepository[Reservation]):
         channel_id: uuid.UUID | None = None,
         search: str | None = None,
     ) -> dict:
-        """Count reservations by status for the given filters (status filter excluded)."""
+        """Count reservations by status for the given filters (status filter excluded).
+
+        The attendance filter is excluded for the same reason as the status
+        filter: these counts are the totals the filter buttons are pressed
+        *against*, so narrowing them by the current selection would make every
+        card agree with itself and tell the admin nothing.
+        """
         filters = self._build_admin_filters(
             date_single, date_from, date_to, channel_id, None, search
         )
 
         stmt = (
-            select(Reservation.status, Reservation.notes)
+            select(
+                Reservation.status,
+                Reservation.notes,
+                Reservation.attendance_status,
+            )
             .join(Reservation.slot)
             .join(Reservation.user)
         )
@@ -412,9 +575,21 @@ class ReservationRepository(BaseRepository[Reservation]):
         active = sum(1 for r in rows if r.status == ReservationStatus.ACTIVE)
         completed = sum(1 for r in rows if r.status == ReservationStatus.COMPLETED)
         cancelled = sum(1 for r in rows if r.status == ReservationStatus.CANCELLED)
-        no_show = sum(
-            1 for r in rows
-            if _parse_notes(r.notes).get("no_show_penalty_applied") is True
+        absent = sum(1 for r in rows if was_absent(r.attendance_status, r.notes))
+        attended = sum(
+            1
+            for r in rows
+            if r.attendance_status == AttendanceStatus.ATTENDED.value
+        )
+        # The work queue, and the reason this count exists: a completed session
+        # nobody has judged yet. Legacy-flagged rows are already scored, so
+        # they are not awaiting anything.
+        awaiting = sum(
+            1
+            for r in rows
+            if r.status == ReservationStatus.COMPLETED
+            and r.attendance_status is None
+            and _parse_notes(r.notes).get("no_show_penalty_applied") is not True
         )
 
         return {
@@ -422,7 +597,14 @@ class ReservationRepository(BaseRepository[Reservation]):
             "active": active,
             "completed": completed,
             "cancelled": cancelled,
-            "no_show": no_show,
+            # Kept under its original name: the panel, and any script anyone
+            # has pointed at this endpoint, reads `no_show`. What it counts has
+            # widened from "the legacy penalty was applied" to "recorded as
+            # absent by either system" — under the old name it would have
+            # frozen the moment automatic scoring was removed.
+            "no_show": absent,
+            "attended": attended,
+            "awaiting_decision": awaiting,
         }
 
     async def admin_export(
@@ -432,9 +614,10 @@ class ReservationRepository(BaseRepository[Reservation]):
         date_to: date | None = None,
         channel_id: uuid.UUID | None = None,
         status: str | None = None,
+        attendance: str | None = None,
     ) -> list[Reservation]:
         filters = self._build_admin_filters(
-            None, date_from, date_to, channel_id, status, None
+            None, date_from, date_to, channel_id, status, None, attendance
         )
 
         stmt = (

@@ -250,16 +250,20 @@ SETTINGS_REGISTRY: list[SettingMeta] = [
         description="Master switch: DM the user whenever their participation score changes.",
         value_type=bool, example=True, validator="bool",
     ),
+    # These two are inert: booking and cancelling no longer change the score,
+    # so nothing writes a reservation_reward or reservation_cancellation row for
+    # them to gate. Kept so an operator's stored value survives, and honest
+    # about having no effect rather than looking like a live dial.
     SettingMeta(
         key="NOTIFY_ON_REWARD", json_key="notify_on_reward",
-        category="score_notifications", label="Notify on reward",
-        description="Send a DM when a reservation reward (+1) is applied. Opt-in — high churn.",
+        category="score_notifications", label="Notify on reward (retired)",
+        description="No longer has any effect — booking a session does not change the score. Attendance decisions are DMed under the master switch above.",
         value_type=bool, example=False, validator="bool",
     ),
     SettingMeta(
         key="NOTIFY_ON_CANCEL_ROLLBACK", json_key="notify_on_cancel_rollback",
-        category="score_notifications", label="Notify on cancel rollback",
-        description="Send a DM when a cancellation rollback (-1) is applied. Opt-in — high churn.",
+        category="score_notifications", label="Notify on cancel rollback (retired)",
+        description="No longer has any effect — cancelling a session does not change the score. Attendance decisions are DMed under the master switch above.",
         value_type=bool, example=False, validator="bool",
     ),
     SettingMeta(

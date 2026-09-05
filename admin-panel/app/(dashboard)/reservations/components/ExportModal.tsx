@@ -3,7 +3,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { exportReservations, getReservations, getChannels } from "@/lib/api/reservations";
+import {
+  exportReservations,
+  getReservations,
+  getChannels,
+  type AttendanceFilter,
+} from "@/lib/api/reservations";
 
 function toDateString(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -21,6 +26,7 @@ export function ExportModal({ onClose }: Props) {
   const [dateTo, setDateTo] = useState(today);
   const [channelId, setChannelId] = useState("");
   const [status, setStatus] = useState("");
+  const [attendance, setAttendance] = useState<AttendanceFilter>("");
   const [format, setFormat] = useState<"csv" | "json">("csv");
   const [isExporting, setIsExporting] = useState(false);
 
@@ -39,13 +45,22 @@ export function ExportModal({ onClose }: Props) {
   });
 
   const { data: preview } = useQuery({
-    queryKey: ["admin", "reservations-export-preview", dateFrom, dateTo, channelId, status],
+    queryKey: [
+      "admin",
+      "reservations-export-preview",
+      dateFrom,
+      dateTo,
+      channelId,
+      status,
+      attendance,
+    ],
     queryFn: () =>
       getReservations({
         date_from: dateFrom,
         date_to: dateTo,
         channel_id: channelId || undefined,
         status: status || undefined,
+        attendance: attendance || undefined,
         page_size: 1,
       }),
     enabled: !!dateFrom && !!dateTo && !overLimit,
@@ -60,6 +75,7 @@ export function ExportModal({ onClose }: Props) {
         date_to: dateTo,
         channel_id: channelId || undefined,
         status: status || undefined,
+        attendance: attendance || undefined,
         format,
       });
     } catch (err: any) {
@@ -137,6 +153,23 @@ export function ExportModal({ onClose }: Props) {
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
             <option value="expired">Expired</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Attendance (optional)
+          </label>
+          <select
+            value={attendance}
+            onChange={(e) => setAttendance(e.target.value as AttendanceFilter)}
+            className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            <option value="">All attendance</option>
+            <option value="pending">To decide</option>
+            <option value="decided">Decided</option>
+            <option value="attended">Attended</option>
+            <option value="absent">Absent</option>
           </select>
         </div>
 

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,6 +14,22 @@ class ReservationStatus(str, Enum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+
+
+class AttendanceStatus(str, Enum):
+    """Whether the user actually showed up, as decided by an admin.
+
+    Deliberately independent of the score: every combination of outcome and
+    delta is legal (attended +10, attended 0, absent +2). Nothing here implies
+    a sign — see ``Reservation.attendance_score_delta``.
+
+    ``ABSENT`` rather than ``NO_SHOW``: the legacy no-show flag lives on in
+    ``notes["no_show_penalty_applied"]`` and is read by the dashboard, the
+    summaries and broadcast segmentation. The two must stay tellable apart.
+    """
+
+    ATTENDED = "attended"
+    ABSENT = "absent"
 
 
 class Reservation(Base, UUIDMixin, TimestampMixin):
@@ -37,6 +53,13 @@ class Reservation(Base, UUIDMixin, TimestampMixin):
             "slot_id",
             postgresql_where=text("status = 'active'"),
         ),
+        # Backs the query the attendance feature is built around: completed
+        # reservations still awaiting a decision (migration 0015). Plain rather
+        # than partial so it serves both directions — Postgres indexes NULLs,
+        # and as decided rows accumulate `attendance_status IS NULL` becomes the
+        # selective end of a very skewed distribution, which is exactly the
+        # lookup the admin queue makes.
+        Index("ix_reservations_attendance_status", "attendance_status"),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -69,6 +92,25 @@ class Reservation(Base, UUIDMixin, TimestampMixin):
     cancelled_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     cancellation_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # ── Admin attendance decision (migration 0015) ────────────────────────
+    # All five are written together by exactly one conditional UPDATE
+    # (ReservationRepository.claim_attendance_decision) and never updated
+    # again; `attendance_status IS NULL` is what makes a decision claimable,
+    # so it doubles as the at-most-once guard. NULL across the board means no
+    # decision has been made — including for every row predating this
+    # migration, which is why nothing here is backfilled.
+    #
+    # A score of 0 is a real decision, so `attendance_score_delta` is 0, not
+    # NULL, once decided. Read attendance from these columns, never from
+    # `notes` — the legacy no-show flag lives there and means something else.
+    attendance_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    attendance_score_delta: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attendance_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    attendance_marked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attendance_marked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

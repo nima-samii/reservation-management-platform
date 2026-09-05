@@ -74,9 +74,6 @@ async def _attempt(service, *, already_booked: int):
     service._res_repo.has_reservation_at_time = AsyncMock(return_value=False)
     service._res_repo.create = AsyncMock(return_value=reservation)
     service._res_repo.get_reservation_with_details = AsyncMock(return_value=reservation)
-    service._score_svc.award_reservation_reward = AsyncMock(
-        return_value=SimpleNamespace(id=uuid.uuid4(), transaction_type="reservation_reward")
-    )
 
     with patch("app.services.reservation.enqueue_score_notification"):
         return await service._perform_booking(uuid.uuid4(), slot.id)
@@ -183,9 +180,6 @@ async def test_the_cap_is_counted_over_the_slot_s_local_date(service, daily_limi
     service._res_repo.has_reservation_at_time = AsyncMock(return_value=False)
     service._res_repo.create = AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4()))
     service._res_repo.get_reservation_with_details = AsyncMock(return_value=SimpleNamespace())
-    service._score_svc.award_reservation_reward = AsyncMock(
-        return_value=SimpleNamespace(id=uuid.uuid4(), transaction_type="reservation_reward")
-    )
 
     user_id = uuid.uuid4()
     with patch("app.services.reservation.enqueue_score_notification"):

@@ -28,6 +28,12 @@ def _should_notify(transaction_type: str) -> bool:
         return settings.NOTIFY_ON_REWARD
     if transaction_type == ScoreTransactionType.RESERVATION_CANCELLATION.value:
         return settings.NOTIFY_ON_CANCEL_ROLLBACK
+    # ATTENDANCE_SCORE deliberately gets no opt-in flag of its own. It is
+    # admin-initiated, happens at most once per reservation, and carries an
+    # explanation the user has no other way to see — nothing like the two
+    # high-churn types above. It does still honour the master switch: an
+    # operator who turned score DMs off has turned them off, and that switch
+    # has to stay a real kill switch.
     return True
 
 

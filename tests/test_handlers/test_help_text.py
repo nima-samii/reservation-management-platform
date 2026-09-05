@@ -58,20 +58,36 @@ class TestScoreCalculationSystem:
         # a user who hosts a broadcast waits for a score that never moves.
         assert "awarded by an admin" in build_help_text()
 
-    def test_the_automatic_deltas_survived_the_rewrite(self):
-        # These are what the bot actually does on its own — see _SCORE_POLICY in
-        # services/score.py. Dropping them for the new rules would leave the
-        # screen silent about the only score changes users see day to day.
+    def test_no_automatic_delta_is_promised_any_more(self):
+        # Booking and cancelling stopped moving the score, so the old "+1 when
+        # you reserve" / "−1 if you cancel" lines became false promises. A user
+        # who reads them waits for a change that never comes.
         text = build_help_text()
-        assert "*+1* when you successfully reserve a session" in text
-        assert "*−1* if you cancel a reservation" in text
+        assert "+1" not in text
+        assert "−1" not in text
+        assert "-1" not in text
 
-    def test_the_no_show_penalty_is_stated_as_real(self):
-        # apply_no_show_penalty is implemented and admin-triggered, so the old
-        # "future penalties may apply" hedge was untrue.
+    def test_booking_and_cancelling_are_stated_as_score_neutral(self):
+        # Stating it is the point: the previous screen promised deltas, so
+        # silence would read as the old behaviour still applying.
+        text = build_help_text()
+        assert "Booking a session does not change your score" in text
+        assert "Cancelling a session does not change your score" in text
+
+    def test_the_screen_explains_who_decides_and_that_a_note_comes_with_it(self):
+        # The score is now an admin decision per session, carrying an
+        # explanation the user is sent. Without this the four earning rules
+        # above read as things the bot computes.
+        text = build_help_text()
+        assert "An admin reviews the session" in text
+        assert "explaining the decision" in text
+
+    def test_the_old_no_show_penalty_is_no_longer_described(self):
+        # Absence no longer means a fixed -1: it is one of two outcomes an
+        # admin records, and the score attached to it is theirs to choose.
         text = build_help_text()
         assert "Future penalties" not in text
-        assert "don't attend a session you booked" in text
+        assert "don't attend a session you booked" not in text
 
 
 # ── The caps are still read at render time ────────────────────────────────────
