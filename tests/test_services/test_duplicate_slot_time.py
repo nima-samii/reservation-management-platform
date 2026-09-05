@@ -73,11 +73,6 @@ def _wire(service, slot, *, already_at_that_time: bool, on_day: int = 0, active:
     reservation = SimpleNamespace(id=uuid.uuid4())
     service._res_repo.create = AsyncMock(return_value=reservation)
     service._res_repo.get_reservation_with_details = AsyncMock(return_value=reservation)
-    service._score_svc.award_reservation_reward = AsyncMock(
-        return_value=SimpleNamespace(
-            id=uuid.uuid4(), transaction_type="reservation_reward"
-        )
-    )
     return reservation
 
 

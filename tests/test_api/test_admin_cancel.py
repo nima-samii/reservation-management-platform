@@ -25,6 +25,14 @@ def _make_fake_res(status: str = "cancelled"):
         id=uuid.uuid4(),
         status=status,
         notes=None,
+        # A cancelled session was never attended and never will be, so it never
+        # receives a decision — but the read model carries the columns, so the
+        # stand-in has to have them.
+        attendance_status=None,
+        attendance_score_delta=None,
+        attendance_reason=None,
+        attendance_marked_by=None,
+        attendance_marked_at=None,
         slot=SimpleNamespace(
             id=uuid.uuid4(),
             slot_datetime=datetime(2026, 6, 20, 18, 0, tzinfo=timezone.utc),

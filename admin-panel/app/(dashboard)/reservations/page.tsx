@@ -2,7 +2,11 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useState, useCallback } from "react";
-import { getReservations, getChannels } from "@/lib/api/reservations";
+import {
+  getReservations,
+  getChannels,
+  type AttendanceFilter,
+} from "@/lib/api/reservations";
 import { SummaryBar } from "./components/SummaryBar";
 import { ReservationTable } from "./components/ReservationTable";
 import { ExportModal } from "./components/ExportModal";
@@ -24,6 +28,7 @@ export default function ReservationsPage() {
   const [dateTo, setDateTo] = useState(today);
   const [channelId, setChannelId] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("");
+  const [attendanceFilter, setAttendanceFilter] = useState<AttendanceFilter>("");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -46,6 +51,7 @@ export default function ReservationsPage() {
       : { date_from: dateFrom, date_to: dateTo }),
     ...(channelId ? { channel_id: channelId } : {}),
     ...(statusFilter ? { status: statusFilter } : {}),
+    ...(attendanceFilter ? { attendance: attendanceFilter } : {}),
     ...(debouncedSearch ? { search: debouncedSearch } : {}),
     page,
     page_size: 100,
@@ -85,6 +91,8 @@ export default function ReservationsPage() {
     completed: 0,
     cancelled: 0,
     no_show: 0,
+    attended: 0,
+    awaiting_decision: 0,
   };
 
   const totalPages = data?.pages ?? 1;
@@ -196,6 +204,24 @@ export default function ReservationsPage() {
             <option value="expired">Expired</option>
           </select>
 
+          <select
+            value={attendanceFilter}
+            onChange={(e) => {
+              setAttendanceFilter(e.target.value as AttendanceFilter);
+              setPage(1);
+            }}
+            title="Narrow the list by where each session is in the attendance decision"
+            className="bg-gray-800 border border-gray-700 text-sm text-white rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            <option value="">All attendance</option>
+            {/* "pending" already implies completed, so it does not need the
+                status filter set alongside it. */}
+            <option value="pending">To decide</option>
+            <option value="decided">Decided</option>
+            <option value="attended">Attended</option>
+            <option value="absent">Absent</option>
+          </select>
+
           <input
             type="search"
             value={search}
@@ -213,8 +239,9 @@ export default function ReservationsPage() {
       {/* Summary bar */}
       <SummaryBar
         summary={summary}
-        onNoShowFilter={() => {
-          setStatusFilter("completed");
+        active={attendanceFilter}
+        onAttendanceFilter={(value) => {
+          setAttendanceFilter(value);
           setPage(1);
         }}
       />

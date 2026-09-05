@@ -69,8 +69,12 @@ async def _reservation(
     *,
     status=ReservationStatus.ACTIVE.value,
     no_show=False,
+    attendance=None,
     slot_datetime=None,
 ):
+    """`no_show` writes the retired penalty flag into `notes`; `attendance`
+    writes the current column. Both are kept available because a real database
+    contains rows of both kinds and the filter has to match either."""
     ch = Channel(name="C", telegram_channel_id=_next_channel_tg(), capacity=50)
     session.add(ch)
     await session.flush()
@@ -82,7 +86,12 @@ async def _reservation(
     await session.flush()
     notes = '{"no_show_penalty_applied": true}' if no_show else None
     r = Reservation(
-        user_id=user.id, slot_id=slot.id, channel_id=ch.id, status=status, notes=notes
+        user_id=user.id,
+        slot_id=slot.id,
+        channel_id=ch.id,
+        status=status,
+        notes=notes,
+        attendance_status=attendance,
     )
     session.add(r)
     await session.flush()
@@ -136,6 +145,60 @@ async def test_has_no_show(db_session):
 
     assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=True))) == {20}
     assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=False))) == {21}
+
+
+@pytest.mark.asyncio
+async def test_has_no_show_matches_an_attendance_decision_too(db_session):
+    """Absences are recorded in the `attendance_status` column now. A filter
+    that still read only the legacy `notes` flag would return an empty audience
+    forever, silently — the worst failure mode for a broadcast segment."""
+    absent = await _user(db_session, tg=30)
+    attended = await _user(db_session, tg=31)
+    legacy = await _user(db_session, tg=32)
+    await _reservation(
+        db_session, absent, status=ReservationStatus.COMPLETED.value, attendance="absent"
+    )
+    await _reservation(
+        db_session, attended, status=ReservationStatus.COMPLETED.value, attendance="attended"
+    )
+    await _reservation(
+        db_session, legacy, status=ReservationStatus.COMPLETED.value, no_show=True
+    )
+    svc = SegmentationService(db_session)
+
+    # Both systems count, and the two never have to be told apart here.
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=True))) == {30, 32}
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=False))) == {31}
+
+
+@pytest.mark.asyncio
+async def test_an_absence_worth_points_still_counts_as_a_missed_session(db_session):
+    """The segment is about who missed a session, not who was penalised for it —
+    an admin may record an absence with a positive score."""
+    told_us = await _user(db_session, tg=40)
+    await _reservation(
+        db_session,
+        told_us,
+        status=ReservationStatus.COMPLETED.value,
+        attendance="absent",
+    )
+    svc = SegmentationService(db_session)
+
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=True))) == {40}
+
+
+@pytest.mark.asyncio
+async def test_an_undecided_reservation_is_not_a_no_show(db_session):
+    """NULL is "not judged yet", not "attended" and not "absent". The negation
+    has to return it, which a plain NOT over a NULL column would not."""
+    undecided = await _user(db_session, tg=50)
+    await _reservation(
+        db_session, undecided, status=ReservationStatus.COMPLETED.value
+    )
+    svc = SegmentationService(db_session)
+
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=True))) == set()
+    assert _tgs(await svc.fetch_recipients(SegmentFilter(has_no_show=False))) == {50}
 
 
 # ── Reservation date range ───────────────────────────────────────────────────

@@ -6,7 +6,8 @@ events table, no migrations, no write path. Each call re-derives the timeline
 from:
 
   * ``reservations``        — creation and (admin) cancellation
-  * ``score_transactions``  — the +1 booking reward and the no-show penalty
+  * ``score_transactions``  — the attendance decision, the retired no-show
+                              penalty, and any admin score adjustment
   * ``notification_logs``   — same-day / pre-session reminders
   * ``admin_audit_logs``    — attributes admin-driven events to an operator
 
@@ -26,19 +27,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError
 from app.db.models.admin_audit_log import AdminAuditLog
 from app.db.models.notification_log import NotificationLog
-from app.db.models.reservation import Reservation, ReservationStatus
+from app.db.models.reservation import AttendanceStatus, Reservation, ReservationStatus
 from app.db.models.score import ScoreTransaction, ScoreTransactionType
 from app.repositories.admin_audit_log import AdminAuditLogRepository
 from app.repositories.notification import NotificationRepository
 from app.repositories.reservation import ReservationRepository
 from app.repositories.score import ScoreTransactionRepository
 
-# Stable tie-breaker for events that share a timestamp (e.g. the reservation
-# and its +1 reward are created in the same transaction). Lower sorts first.
+# Stable tie-breaker for events that share a timestamp (e.g. an attendance
+# decision and its ledger row are written in the same transaction). Lower
+# sorts first.
 _TYPE_ORDER = {
     "reservation_created": 0,
     "score_awarded": 1,
+    "score_adjusted": 1,
     "notification_sent": 2,
+    "attendance_recorded": 3,
     "no_show_applied": 3,
     "reservation_cancelled": 4,
 }
@@ -47,6 +51,13 @@ _REMINDER_TITLES = {
     "same_day": "Same-Day Reminder Sent",
     "pre_session": "Pre-Session Reminder Sent",
     "final": "Final Live Reminder Sent",
+}
+
+# Outcome first, because the score cannot express it: an absence may still
+# carry points and an attended session may be worth none.
+_ATTENDANCE_LABEL = {
+    AttendanceStatus.ATTENDED.value: "Attended",
+    AttendanceStatus.ABSENT.value: "Did Not Attend",
 }
 
 
@@ -126,13 +137,47 @@ class ReservationTimelineService:
             )
         )
 
-        # ── Score / No-Show (from the immutable ledger) ───────────────────
+        # ── Score events (from the immutable ledger) ──────────────────────
+        # Every ledger row linked to this reservation produces an event. The
+        # branch used to end at `elif tx.score_delta > 0`, which silently
+        # dropped anything that was not a gain — including an attendance
+        # decision worth 0 or -5, the two cases this feature exists to make
+        # possible, and any negative admin adjustment.
         no_show_admin = next(
             (a.admin_username for a in audit_logs if a.action == "no_show_applied"),
             None,
         )
+        attendance_admin = next(
+            (a.admin_username for a in audit_logs if a.action == "attendance_recorded"),
+            None,
+        )
         for tx in score_txns:
-            if tx.transaction_type == ScoreTransactionType.NO_SHOW_PENALTY.value:
+            if tx.transaction_type == ScoreTransactionType.ATTENDANCE_SCORE.value:
+                # The reservation column is authoritative; the ledger row's
+                # `meta` mirror is the fallback for a row whose reservation was
+                # deleted (reservation_id is ON DELETE SET NULL).
+                outcome = reservation.attendance_status or (tx.meta or {}).get(
+                    "attendance_status"
+                )
+                label = _ATTENDANCE_LABEL.get(outcome or "", "Attendance Recorded")
+                # `{:+d}` would render a zero decision as "+0"; it is a real
+                # outcome and deserves to read as one.
+                score_part = f"{tx.score_delta:+d}" if tx.score_delta else "0"
+                events.append(
+                    TimelineEvent(
+                        type="attendance_recorded",
+                        title=f"{label} · Score {score_part}",
+                        timestamp=tx.created_at,
+                        metadata={
+                            "attendance_status": outcome,
+                            "delta": tx.score_delta,
+                            "admin": attendance_admin
+                            or reservation.attendance_marked_by,
+                            "reason": tx.reason,
+                        },
+                    )
+                )
+            elif tx.transaction_type == ScoreTransactionType.NO_SHOW_PENALTY.value:
                 events.append(
                     TimelineEvent(
                         type="no_show_applied",
@@ -145,11 +190,20 @@ class ReservationTimelineService:
                         },
                     )
                 )
-            elif tx.score_delta > 0:
+            else:
+                if tx.score_delta > 0:
+                    event_type = "score_awarded"
+                    title = f"Score +{tx.score_delta} Awarded"
+                elif tx.score_delta < 0:
+                    event_type = "score_adjusted"
+                    title = f"Score {tx.score_delta} Deducted"
+                else:
+                    event_type = "score_adjusted"
+                    title = "Score Reviewed, Unchanged"
                 events.append(
                     TimelineEvent(
-                        type="score_awarded",
-                        title=f"Score +{tx.score_delta} Awarded",
+                        type=event_type,
+                        title=title,
                         timestamp=tx.created_at,
                         metadata={
                             "delta": tx.score_delta,

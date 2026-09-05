@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 import pytz
@@ -9,9 +10,12 @@ from app.cache.keys import CacheKey
 from app.core.config import settings
 from app.core.booking_rules import is_same_day_cutoff_passed
 from app.core.exceptions import (
+    AttendanceAlreadyRecordedError,
+    AttendanceNotDecidableError,
     CancellationCutoffError,
     DailyLimitError,
     DuplicateSlotTimeError,
+    LegacyNoShowRecordedError,
     MaxReservationsError,
     NotFoundError,
     PastSlotError,
@@ -19,11 +23,12 @@ from app.core.exceptions import (
     SameDayCutoffError,
     SlotUnavailableError,
     UserBannedError,
+    ValidationError,
 )
 from app.core.logging import get_logger
-from app.db.models.reservation import Reservation, ReservationStatus
+from app.db.models.reservation import AttendanceStatus, Reservation, ReservationStatus
 from app.repositories.channel import ChannelRepository
-from app.repositories.reservation import ReservationRepository
+from app.repositories.reservation import ReservationRepository, _parse_notes
 from app.repositories.slot import SlotRepository
 from app.repositories.user import UserRepository
 from app.schedulers.jobs.reservation_notification import (
@@ -40,6 +45,28 @@ logger = get_logger(__name__)
 
 TZ = pytz.timezone(settings.TIMEZONE)
 SLOT_LOCK_TTL = 30  # seconds
+
+# Widest score an admin may enter with an attendance decision, either sign.
+# Larger than the ±100 on admin score adjustment because the published earning
+# rules are per-participant ("the number of participants in the course") and
+# promise fixed awards of 30, so ±100 is a bound the rules can already exceed.
+ATTENDANCE_SCORE_LIMIT = 1000
+
+# Matches reservations.attendance_reason. The reason is quoted back to the user
+# in their notification, so it is required, not decorative.
+ATTENDANCE_REASON_MAX = 256
+
+
+@dataclass(frozen=True)
+class AttendanceOutcome:
+    """What an attendance decision produced, for the caller to report back."""
+
+    reservation: Reservation
+    transaction_id: uuid.UUID
+    attendance_status: str
+    score_delta: int
+    reason: str
+    new_score: int
 
 
 class ReservationService:
@@ -144,11 +171,12 @@ class ReservationService:
         """Book a slot on behalf of an existing user from the admin panel.
 
         Goes through the exact same booking core as user booking (``_book`` →
-        ``_perform_booking``): identical locking, validation (daily limit, max
-        active, duplicate time, double-booking, past-slot, same-day cutoff) and
-        the standard +1 score reward. The only admin-specific additions are the up-front
-        existence/ban checks and an out-of-band confirmation DM (the user is not
-        in a chat flow, so unlike user booking there is no inline confirmation).
+        ``_perform_booking``): identical locking and validation (daily limit,
+        max active, duplicate time, double-booking, past-slot, same-day
+        cutoff). Booking does not move the score. The only admin-specific
+        additions are the up-front existence/ban checks and an out-of-band
+        confirmation DM (the user is not in a chat flow, so unlike user booking
+        there is no inline confirmation).
 
         Deliberately passes no strategy: an admin picked the channel, and no
         configured reservation strategy may override that choice.
@@ -260,8 +288,11 @@ class ReservationService:
         # context switch → MissingGreenlet at the handler level.
         loaded = await self._res_repo.get_reservation_with_details(reservation.id)
 
-        tx = await self._score_svc.award_reservation_reward(user_id, reservation.id)
-        enqueue_score_notification(tx.id, tx.transaction_type)
+        # No score change. Booking a session is not participation — showing up
+        # is, and that is an admin decision recorded through record_attendance
+        # with a number the admin chooses. The old +1 here meant a user could
+        # farm score by booking, and it made the score say how often someone
+        # pressed the button rather than how often they took part.
 
         logger.info(
             "reservation_created",
@@ -307,8 +338,10 @@ class ReservationService:
         reservation.slot.is_booked = False
         await self._slot_repo.save(reservation.slot)
 
-        tx = await self._score_svc.rollback_cancellation(user.id, reservation_id)
-        enqueue_score_notification(tx.id, tx.transaction_type)
+        # No score change. There was nothing awarded at booking to roll back,
+        # and cancelling inside the cutoff is the behaviour the rules ask for —
+        # penalising it taught users to no-show instead, which is worse for
+        # everyone waiting for the slot.
 
         logger.info(
             "reservation_cancelled",
@@ -324,9 +357,9 @@ class ReservationService:
     ) -> Reservation:
         """Cancel a reservation on behalf of an admin.
 
-        Reuses the shared cancellation flow (status flip + slot release) and
-        rolls back the booking's +1 reward (-1), so an admin cancellation leaves
-        the user's score as if the reservation had never been made. Records the
+        Reuses the shared cancellation flow (status flip + slot release). The
+        score is untouched — nothing was awarded at booking, and a cancelled
+        session never happened, so there is nothing to score. Records the
         acting admin, reason and timestamp, then enqueues a user-facing DM that
         is delivered out-of-band after this request's transaction commits.
         """
@@ -360,14 +393,9 @@ class ReservationService:
         reservation.slot.is_booked = False
         await self._slot_repo.save(reservation.slot)
 
-        # Roll back the +1 earned at booking. The dedicated cancellation DM
-        # below already informs the user, so we deliberately do NOT raise a
-        # second "Score Update" DM here (RESERVATION_CANCELLATION is gated off
-        # by NOTIFY_ON_CANCEL_ROLLBACK; enqueue self-filters accordingly).
-        tx = await self._score_svc.rollback_cancellation(
-            reservation.user_id, reservation.id
-        )
-        enqueue_score_notification(tx.id, tx.transaction_type)
+        # No score change — see cancel_reservation. A cancelled session was
+        # never attended and never will be, so it has no attendance decision
+        # either; the user's score simply does not move.
 
         # Deliver the DM only after the surrounding transaction commits (the
         # delayed job runs in its own session); a failed send never rolls back
@@ -380,6 +408,136 @@ class ReservationService:
             admin=actor,
         )
         return reservation
+
+    async def record_attendance(
+        self,
+        reservation_id: uuid.UUID,
+        *,
+        attendance_status: AttendanceStatus,
+        score_delta: int,
+        reason: str,
+        actor: str,
+    ) -> AttendanceOutcome:
+        """Record an admin's attendance decision and the score it carries.
+
+        The outcome and the score are independent inputs. Nothing here derives
+        one from the other, and no combination is rejected: attended for 0,
+        absent for +2, attended for -5 are all decisions an admin is allowed to
+        make, and the reason is what explains them to the user.
+
+        Ordering is the whole point of this method. The claim comes **first**,
+        and the score is applied only after winning it:
+
+            claim (status='completed' AND attendance_status IS NULL)
+                → score ledger + cached balance
+                → enqueue the DM
+
+        Both writes share this request's session and therefore commit or roll
+        back together, so a failure after the claim leaves no decision *and* no
+        charge. Doing it the other way round — score, then flag — is the live
+        defect in the legacy no-show endpoint: a crash in between charges the
+        user for a decision no later request can see was already made, and a
+        concurrent request reads the unflagged row and charges again.
+
+        The status and existence checks before the claim exist only to give the
+        caller a usable error. They are advisory — the row can change under
+        them — so a lost claim is never reported as success.
+
+        Immutable by construction: a second call raises rather than editing.
+        Corrections belong in an admin score adjustment on the user, which
+        leaves its own ledger row and reason.
+        """
+        if not -ATTENDANCE_SCORE_LIMIT <= score_delta <= ATTENDANCE_SCORE_LIMIT:
+            raise ValidationError(
+                f"Attendance score must be between -{ATTENDANCE_SCORE_LIMIT} "
+                f"and +{ATTENDANCE_SCORE_LIMIT}."
+            )
+
+        clean_reason = reason.strip()
+        if not clean_reason:
+            raise ValidationError("An explanation is required.")
+        if len(clean_reason) > ATTENDANCE_REASON_MAX:
+            raise ValidationError(
+                f"Explanation must be at most {ATTENDANCE_REASON_MAX} characters."
+            )
+
+        reservation = await self._res_repo.get_reservation_admin_detail(reservation_id)
+        if not reservation:
+            raise NotFoundError("Reservation")
+
+        # Advisory, for the error message only — the claim below is what
+        # actually enforces both conditions.
+        if reservation.status != ReservationStatus.COMPLETED:
+            raise AttendanceNotDecidableError(reservation.status)
+        if reservation.attendance_status is not None:
+            raise AttendanceAlreadyRecordedError()
+        # The legacy no-show penalty scored this same session, so proceeding
+        # would charge the user twice for one absence. Not folded into the
+        # claim's WHERE clause: the flag is a substring of a JSON string column
+        # and matching it in SQL would make the guard depend on how that text
+        # happens to be serialised.
+        if _parse_notes(reservation.notes).get("no_show_penalty_applied") is True:
+            raise LegacyNoShowRecordedError()
+
+        marked_at = self._now_tz()
+        won = await self._res_repo.claim_attendance_decision(
+            reservation_id,
+            attendance_status=attendance_status.value,
+            score_delta=score_delta,
+            reason=clean_reason,
+            marked_by=actor,
+            marked_at=marked_at,
+        )
+        if not won:
+            # Lost to a concurrent decision, or the row is no longer completed.
+            # The read above already ruled out the second case as far as it
+            # could see, so report the race.
+            raise AttendanceAlreadyRecordedError()
+
+        tx = await self._score_svc.apply_attendance_score(
+            user_id=reservation.user_id,
+            reservation_id=reservation.id,
+            delta=score_delta,
+            reason=clean_reason,
+            meta={"attendance_status": attendance_status.value, "admin": actor},
+        )
+
+        # The claim ran as a bulk UPDATE with synchronize_session=False, so the
+        # loaded instance still shows the pre-claim values. Mirror them for the
+        # caller's response rather than re-reading the row.
+        reservation.attendance_status = attendance_status.value
+        reservation.attendance_score_delta = score_delta
+        reservation.attendance_reason = clean_reason
+        reservation.attendance_marked_by = actor
+        reservation.attendance_marked_at = marked_at
+
+        # apply_score_delta increments in SQL, so the cached column on the
+        # loaded user is stale by exactly the delta; refresh instead of adding
+        # it locally, which would hide any concurrent adjustment.
+        await self._session.refresh(reservation.user, ["participation_score"])
+
+        # Delivered out-of-band once this request's transaction commits, in the
+        # job's own session — a failed DM never rolls back the decision or the
+        # score.
+        enqueue_score_notification(tx.id, tx.transaction_type)
+
+        logger.info(
+            "attendance_recorded",
+            reservation_id=str(reservation_id),
+            user_id=str(reservation.user_id),
+            attendance_status=attendance_status.value,
+            score_delta=score_delta,
+            admin=actor,
+        )
+
+        return AttendanceOutcome(
+            reservation=reservation,
+            transaction_id=tx.id,
+            attendance_status=attendance_status.value,
+            score_delta=score_delta,
+            reason=clean_reason,
+            new_score=reservation.user.participation_score,
+        )
 
     async def get_user_reservations(self, telegram_id: int) -> list[Reservation]:
         user = await self._user_repo.get_by_telegram_id(telegram_id)

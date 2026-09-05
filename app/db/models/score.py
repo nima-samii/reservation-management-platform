@@ -10,10 +10,22 @@ from app.db.base import Base, UUIDMixin
 
 
 class ScoreTransactionType(str, Enum):
+    # Historical only — nothing writes these two any more. Booking a session
+    # and cancelling one no longer move the score; participation is decided by
+    # an admin through ATTENDANCE_SCORE below. The members stay because the
+    # ledger is append-only: rows written under the old ±1 rules still exist
+    # and still have to render in a user's score history.
     RESERVATION_REWARD = "reservation_reward"
     RESERVATION_CANCELLATION = "reservation_cancellation"
     NO_SHOW_PENALTY = "no_show_penalty"
     ADMIN_ADJUSTMENT = "admin_adjustment"
+    # Score an admin entered when deciding whether a completed reservation was
+    # attended. One type for both outcomes: the outcome does not determine the
+    # sign (attending can be worth 0, an absence can still be worth points), so
+    # splitting it in two would encode a rule that does not exist. Which
+    # outcome it was lives in `reservations.attendance_status` and is mirrored
+    # into this row's `meta`.
+    ATTENDANCE_SCORE = "attendance_score"
 
 
 class NotifyStatus(str, Enum):

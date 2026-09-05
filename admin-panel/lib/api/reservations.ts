@@ -26,6 +26,8 @@ export interface UserInfo {
   participation_score: number;
 }
 
+export type AttendanceStatus = "attended" | "absent";
+
 export interface ReservationItem {
   id: string;
   status: string;
@@ -33,7 +35,21 @@ export interface ReservationItem {
   slot: SlotInfo;
   channel: ChannelInfo;
   user: UserInfo;
+
+  // The retired no-show penalty only. Always meant -1 and cannot be
+  // re-decided, so it is rendered as history, never as an outcome an admin
+  // chose.
   no_show_applied: boolean;
+
+  // The attendance decision. All five are null until an admin records one —
+  // which is why `attendance_score_delta` is `number | null` and not `number`:
+  // 0 is a real decision ("attended, worth nothing") and must not look like
+  // "not judged yet".
+  attendance_status: AttendanceStatus | null;
+  attendance_score_delta: number | null;
+  attendance_reason: string | null;
+  attendance_marked_by: string | null;
+  attendance_marked_at: string | null;
 }
 
 export type ReservationDetail = ReservationItem;
@@ -45,20 +61,45 @@ export interface TimelineEvent {
   metadata: Record<string, unknown>;
 }
 
-export interface NoShowResponse {
+export interface RecordAttendanceBody {
+  attendance_status: AttendanceStatus;
+  score_delta: number;
+  reason: string;
+}
+
+export interface AttendanceResponse {
   reservation_id: string;
   user_id: string;
+  attendance_status: AttendanceStatus;
+  score_delta: number;
+  reason: string;
   new_score: number;
   transaction_id: string;
+  marked_by: string;
+  marked_at: string;
 }
+
+// Mirrors ATTENDANCE_SCORE_LIMIT / ATTENDANCE_REASON_MAX in
+// app/services/reservation.py. Duplicated because the panel is a separate
+// build with no access to them; the server re-checks both and is the
+// authority, so the worst a drift can do is a 422 the modal already renders.
+export const ATTENDANCE_SCORE_LIMIT = 1000;
+export const ATTENDANCE_REASON_MAX = 256;
 
 export interface DaySummary {
   total: number;
   active: number;
   completed: number;
   cancelled: number;
+  // "Recorded as absent" under either system — the retired penalty flag or an
+  // `absent` decision. Kept under the old name on the wire.
   no_show: number;
+  attended: number;
+  // Completed, unjudged, not already scored by the retired penalty.
+  awaiting_decision: number;
 }
+
+export type AttendanceFilter = "" | "pending" | "decided" | "attended" | "absent";
 
 export interface PaginatedReservations {
   items: ReservationItem[];
@@ -86,6 +127,7 @@ export interface ReservationsParams {
   date_to?: string;
   channel_id?: string;
   status?: string;
+  attendance?: string;
   search?: string;
   page?: number;
   page_size?: number;
@@ -96,6 +138,7 @@ export interface ExportParams {
   date_to: string;
   channel_id?: string;
   status?: string;
+  attendance?: string;
   format?: "csv" | "json";
 }
 
@@ -108,6 +151,7 @@ export async function getReservations(
   if (params.date_to) q.set("date_to", params.date_to);
   if (params.channel_id) q.set("channel_id", params.channel_id);
   if (params.status) q.set("status", params.status);
+  if (params.attendance) q.set("attendance", params.attendance);
   if (params.search) q.set("search", params.search);
   if (params.page) q.set("page", String(params.page));
   if (params.page_size) q.set("page_size", String(params.page_size));
@@ -140,10 +184,24 @@ export async function cancelReservation(
   return data;
 }
 
-export async function markNoShow(id: string): Promise<NoShowResponse> {
-  const { data } = await api.post<NoShowResponse>(
-    `/admin/reservations/${id}/no-show`,
-    {}
+/** Record an attendance decision and the score it carries.
+ *
+ * Replaces `markNoShow`, which posted to the now-deprecated `/no-show`
+ * endpoint and always meant -1. That function is gone rather than kept
+ * alongside: the two mechanisms score the same session and the server refuses
+ * whichever comes second, so a panel that could still reach the old one would
+ * only ever produce a 409 an admin cannot act on.
+ *
+ * One decision per reservation, ever. Corrections go through an admin score
+ * adjustment on the user.
+ */
+export async function recordAttendance(
+  id: string,
+  body: RecordAttendanceBody
+): Promise<AttendanceResponse> {
+  const { data } = await api.post<AttendanceResponse>(
+    `/admin/reservations/${id}/attendance`,
+    body
   );
   return data;
 }
@@ -178,6 +236,7 @@ export async function exportReservations(params: ExportParams): Promise<void> {
   q.set("date_to", params.date_to);
   if (params.channel_id) q.set("channel_id", params.channel_id);
   if (params.status) q.set("status", params.status);
+  if (params.attendance) q.set("attendance", params.attendance);
   q.set("format", params.format ?? "csv");
 
   const token = getCookie("admin_access_token");

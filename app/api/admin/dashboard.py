@@ -18,7 +18,7 @@ from app.db.models.reservation import Reservation, ReservationStatus
 from app.db.models.slot import ReservationSlot
 from app.db.models.user import User
 from app.db.session import get_db_session
-from app.repositories.reservation import _parse_notes
+from app.repositories.reservation import was_absent
 
 router = APIRouter(tags=["admin-dashboard"])
 TZ = pytz.timezone(settings.TIMEZONE)
@@ -53,7 +53,12 @@ async def get_dashboard_stats(
     today_rows = list(
         (
             await session.execute(
-                select(Reservation.status, Reservation.notes, Reservation.user_id)
+                select(
+                    Reservation.status,
+                    Reservation.notes,
+                    Reservation.attendance_status,
+                    Reservation.user_id,
+                )
                 .join(Reservation.slot)
                 .where(local_dt == today)
             )
@@ -63,9 +68,11 @@ async def get_dashboard_stats(
     today_active = sum(1 for r in today_rows if r.status == ReservationStatus.ACTIVE)
     today_completed = sum(1 for r in today_rows if r.status == ReservationStatus.COMPLETED)
     today_cancelled = sum(1 for r in today_rows if r.status == ReservationStatus.CANCELLED)
+    # Absences under either system — the legacy penalty flag or an `absent`
+    # attendance decision. Reading only the flag would have pinned this tile at
+    # zero for everything recorded from now on.
     today_no_show = sum(
-        1 for r in today_rows
-        if _parse_notes(r.notes).get("no_show_penalty_applied") is True
+        1 for r in today_rows if was_absent(r.attendance_status, r.notes)
     )
     today_unique_users = len({r.user_id for r in today_rows})
 
@@ -133,7 +140,12 @@ async def get_dashboard_stats(
     week_rows = list(
         (
             await session.execute(
-                select(Reservation.status, Reservation.notes, Reservation.user_id)
+                select(
+                    Reservation.status,
+                    Reservation.notes,
+                    Reservation.attendance_status,
+                    Reservation.user_id,
+                )
                 .join(Reservation.slot)
                 .where(local_dt >= week_start, local_dt <= today)
             )
@@ -141,8 +153,7 @@ async def get_dashboard_stats(
     )
     week_total = len(week_rows)
     week_no_show = sum(
-        1 for r in week_rows
-        if _parse_notes(r.notes).get("no_show_penalty_applied") is True
+        1 for r in week_rows if was_absent(r.attendance_status, r.notes)
     )
 
     week_start_utc = TZ.localize(
@@ -236,7 +247,12 @@ async def get_dashboard_activity(
 
     rows = (
         await session.execute(
-            select(local_dt.label("res_date"), Reservation.status, Reservation.notes)
+            select(
+                local_dt.label("res_date"),
+                Reservation.status,
+                Reservation.notes,
+                Reservation.attendance_status,
+            )
             .join(Reservation.slot)
             .where(local_dt >= date_start, local_dt <= today)
         )
@@ -263,7 +279,7 @@ async def get_dashboard_activity(
             day_map[d]["completed"] += 1
         elif row.status == ReservationStatus.CANCELLED:
             day_map[d]["cancelled"] += 1
-        if _parse_notes(row.notes).get("no_show_penalty_applied") is True:
+        if was_absent(row.attendance_status, row.notes):
             day_map[d]["no_show"] += 1
 
     return list(day_map.values())

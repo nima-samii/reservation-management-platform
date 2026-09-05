@@ -128,6 +128,65 @@ class ReservationNotCancellableError(ReservationError):
         self.current_status = current_status
 
 
+class AttendanceNotDecidableError(ReservationError):
+    """Raised when an attendance decision is attempted on a non-COMPLETED row.
+
+    An active reservation has not happened yet and a cancelled one never will,
+    so neither can be judged. Note that a reservation whose slot has just
+    passed is still ACTIVE until the lifecycle job promotes it (:00/:30), and
+    lands here — hence the status in the message, which is the only thing that
+    explains the wait.
+    """
+
+    def __init__(self, current_status: str) -> None:
+        # Normalised because callers hand this either a raw status string read
+        # back from the database or a ReservationStatus member, and a
+        # (str, Enum) member interpolates as "ReservationStatus.EXPIRED" — not
+        # something to show an admin.
+        current_status = getattr(current_status, "value", current_status)
+        super().__init__(
+            "Attendance can only be recorded for completed reservations "
+            f"(current status: {current_status})."
+        )
+        self.current_status = current_status
+
+
+class AttendanceAlreadyRecordedError(ReservationError):
+    """Raised when a reservation already carries an attendance decision.
+
+    Decisions are immutable — the score has been applied and the user has been
+    told. A correction is a new admin score adjustment on the user, not an
+    edit here.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Attendance has already been recorded for this reservation."
+        )
+
+
+class LegacyNoShowRecordedError(ReservationError):
+    """Raised when the reservation already carries the legacy no-show penalty.
+
+    The two mechanisms score the same session, so allowing both would charge
+    the user twice for one absence. They cannot be merged either: the legacy
+    flag lives in ``notes["no_show_penalty_applied"]``, always means -1, and is
+    still read by the dashboard, the summaries and broadcast segmentation.
+
+    Distinct from :class:`AttendanceAlreadyRecordedError` because the remedy is
+    different — there is no attendance decision to point at, only an older
+    penalty, and an admin who wants a different number applies a score
+    adjustment on the user.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "A no-show penalty was already applied to this reservation under "
+            "the previous system, so an attendance decision would score the "
+            "same session twice."
+        )
+
+
 class NoChannelAvailableError(ReservationError):
     def __init__(self) -> None:
         super().__init__("No channels are currently available for reservations.")

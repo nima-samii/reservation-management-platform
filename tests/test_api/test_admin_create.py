@@ -31,6 +31,13 @@ def _make_fake_res(status: str = "active"):
         id=uuid.uuid4(),
         status=status,
         notes=None,
+        # Freshly created: no decision has been made, and none can be until the
+        # session has run.
+        attendance_status=None,
+        attendance_score_delta=None,
+        attendance_reason=None,
+        attendance_marked_by=None,
+        attendance_marked_at=None,
         slot=SimpleNamespace(
             id=uuid.uuid4(),
             slot_datetime=datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc),
